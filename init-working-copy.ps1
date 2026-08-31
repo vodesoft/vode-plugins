@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Vode Plugins (vdplg) — idempotent working-copy initializer.
+    Vode Plugins (vdplg) - idempotent working-copy initializer.
 
 .DESCRIPTION
     Prepares a fresh or existing clone for building:
@@ -40,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 # --- locate repo root --------------------------------------------------------
 $RepoRoot = $PSScriptRoot
 if (-not (Test-Path (Join-Path $RepoRoot '.gitmodules'))) {
-    throw "Could not find .gitmodules in $RepoRoot — run this script from the repo root."
+    throw "Could not find .gitmodules in $RepoRoot - run this script from the repo root."
 }
 Write-Host "Repo root: $RepoRoot" -ForegroundColor Cyan
 
@@ -61,7 +61,7 @@ try {
     Write-Host 'Updating submodules (this may take a while on first run)...' -ForegroundColor Cyan
     & git submodule update --init --recursive --force
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning 'Recursive submodule update failed — retrying from inside third_party\vst3sdk (known Windows permission quirk).'
+        Write-Warning 'Recursive submodule update failed - retrying from inside third_party\vst3sdk (known Windows permission quirk).'
         $sdkDir = Join-Path $RepoRoot 'third_party\vst3sdk'
         if (-not (Test-Path $sdkDir)) {
             New-Item -ItemType Directory -Path $sdkDir -Force | Out-Null
@@ -90,7 +90,7 @@ try {
         if (Test-Path $full) {
             Write-Host ("[OK]   {0}" -f $s.Name) -ForegroundColor Green
         } else {
-            Write-Host ("[MISS] {0} — expected {1}" -f $s.Name, $s.Path) -ForegroundColor Red
+            Write-Host ("[MISS] {0} - expected {1}" -f $s.Name, $s.Path) -ForegroundColor Red
             $allOk = $false
         }
     }

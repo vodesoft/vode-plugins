@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Vode Plugins (vdplg) — read-only developer environment check.
+    Vode Plugins (vdplg) - read-only developer environment check.
 
 .DESCRIPTION
     Verifies that all hard requirements for building the repo are present:
@@ -100,7 +100,7 @@ if (Test-Path $vswhere) {
 $failed = @($results | Where-Object { -not $_.Ok })
 if (-not $Quiet) {
     Write-Host ''
-    Write-Host 'Vode Plugins — developer environment check' -ForegroundColor Cyan
+    Write-Host 'Vode Plugins - developer environment check' -ForegroundColor Cyan
     Write-Host ('-' * 60)
     foreach ($r in $results) {
         $color = if ($r.Ok) { 'Green' } else { 'Red' }
