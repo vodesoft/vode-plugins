@@ -1,0 +1,11 @@
+{
+  "input": "../wavs/sine_440.wav",
+  "blockSize": 512,
+  "automation": "Gain=0dB@0samples,Gain=6dB@0.5s",
+  "assertions": [
+    "peak(out) >= 0.97",
+    "peak(out) <= 1.03",
+    "spectral_peak(out, 440) >= -6"
+  ],
+  "reportJson": false
+}

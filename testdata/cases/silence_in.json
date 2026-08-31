@@ -1,0 +1,10 @@
+{
+  "input": "../wavs/silence.wav",
+  "blockSize": 1024,
+  "automation": "Gain=24dB@0samples",
+  "assertions": [
+    "peak(out) == 0",
+    "rms(out) == 0"
+  ],
+  "reportJson": false
+}
