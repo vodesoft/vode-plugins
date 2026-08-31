@@ -9,9 +9,9 @@
 
 #define stringOriginalFilename "passthrough.vst3"
 #if SMTG_PLATFORM_64
-#define stringFileDescription "Vode Passthrough VST3 (64Bit)"
+#define stringFileDescription "Passthrough VST3 (64Bit)"
 #else
-#define stringFileDescription "Vode Passthrough VST3"
+#define stringFileDescription "Passthrough VST3"
 #endif
 #define stringCompanyWeb     "https://vode.example.com"
 #define stringCompanyEmail   "mailto:plugins@vode.example.com"

@@ -7,7 +7,7 @@
 
 #include "public.sdk/source/main/pluginfactory.h"
 
-#define stringPluginName "Vode Passthrough"
+#define stringPluginName "Passthrough"
 
 using namespace Steinberg::Vst;
 using namespace vdplg::passthrough;
