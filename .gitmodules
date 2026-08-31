@@ -1,0 +1,12 @@
+[submodule "third_party/vst3sdk"]
+	path = third_party/vst3sdk
+	url = https://github.com/steinbergmedia/vst3sdk.git
+[submodule "third_party/signalsmith-dsp"]
+	path = third_party/signalsmith-dsp
+	url = https://github.com/signalsmith-audio/dsp.git
+[submodule "third_party/catch2"]
+	path = third_party/catch2
+	url = https://github.com/catchorg/Catch2.git
+[submodule "third_party/dr_wav"]
+	path = third_party/dr_wav
+	url = https://github.com/mackron/dr_libs.git
