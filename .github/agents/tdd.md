@@ -18,6 +18,7 @@ argument-hint: A feature requirement or task to plan and implement following TDD
 - Always: plan before code; verify tests fail before implementing; state assumptions explicitly; ask when ambiguous.
 - Ask first: if multiple interpretations exist, present them instead of picking silently; if a simpler approach exists, say so.
 - Never: write production code without a failing test; skip planning; transition phases without explicit user request.
+- Keep the plan current: record changes and decisions as "Implementation notes" in the relevant section, so all context survives compaction.
 
 ## Code discipline
 
