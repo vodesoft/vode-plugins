@@ -12,8 +12,8 @@
 			"knob.value": "#4da6ff",
 			"label.text": "#dcdcdcff"
 		},
-		"views": {
-			"CViewContainer": {
+		"templates": {
+			"view": {
 				"attributes": {
 					"class": "CViewContainer",
 					"origin": "0, 0",

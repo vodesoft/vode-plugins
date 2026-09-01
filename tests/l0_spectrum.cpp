@@ -415,6 +415,39 @@ TEST_CASE("L0: analyzer reconfigure mid-stream keeps finding the peak",
 	REQUIRE(found <= expectedCol + 1);
 }
 
+TEST_CASE("L0: analyzer accepts blocks larger than the FFT size without corruption",
+          "[l0][sectra][analyzer]")
+{
+// Hosts may deliver audio blocks bigger than the configured FFT size
+// (e.g. Studio One with large buffer sizes). The analyzer must chunk such
+// input instead of reading past its trailing-N history buffer.
+LogFreqMap map(20.0, 20000.0, kColumns);
+const int fftSize = 4096;
+
+for (int blockLen : {fftSize, fftSize * 2, fftSize * 4})
+{
+SpectrumAnalyzer an;
+an.configure(fftSize, WindowType::kHann, DbReference::kNormalized, kSampleRate);
+std::vector<float> block(static_cast<std::size_t>(blockLen), 0.0f);
+for (int b = 0; b < 4; ++b)
+an.process(block.data(), blockLen); // all-silence: no NaN/Inf allowed
+const auto& spec = an.spectrum();
+REQUIRE(spec.size() == static_cast<std::size_t>(kColumns));
+for (float v : spec)
+REQUIRE(std::isfinite(v));
+
+// A real tone in an oversized block must still land at the right column.
+SpectrumAnalyzer an2;
+an2.configure(fftSize, WindowType::kHann, DbReference::kNormalized, kSampleRate);
+auto tone = makeSine(440.0, blockLen * 8, 0.5f);
+for (int off = 0; off + blockLen <= static_cast<int>(tone.size()); off += blockLen)
+an2.process(tone.data() + static_cast<std::size_t>(off), blockLen);
+int expectedCol = static_cast<int>(map.freqToX(440.0));
+int found = argMaxColumn(an2.spectrum());
+REQUIRE(found >= expectedCol - 1);
+REQUIRE(found <= expectedCol + 1);
+}
+}
 TEST_CASE("L0: every window type produces a valid spectrum with the right peak",
           "[l0][sectra][analyzer]")
 {

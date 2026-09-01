@@ -292,7 +292,20 @@ void SpectrumAnalyzer::process(const float* samples, int numSamples)
 	if (!samples || numSamples <= 0 || !configured_)
 		return;
 
-	// Advance the trailing-N history by numSamples.
+	// Hosts may deliver blocks larger than the FFT size: chunk them so the
+	// trailing-N history never advances past its own end.
+	int offset = 0;
+	while (offset < numSamples)
+	{
+		const int n = std::min(fftSize_, numSamples - offset);
+		processFrame(samples + offset, n);
+		offset += n;
+	}
+}
+
+void SpectrumAnalyzer::processFrame(const float* samples, int numSamples)
+{
+	// Advance the trailing-N history by numSamples (<= fftSize_).
 	std::vector<float> shifted(history_.begin() + numSamples, history_.end());
 	shifted.insert(shifted.end(), samples, samples + numSamples);
 	history_.swap(shifted);
@@ -322,7 +335,6 @@ void SpectrumAnalyzer::process(const float* samples, int numSamples)
 		targetLinear_[static_cast<std::size_t>(col)] =
 		    std::max(targetLinear_[static_cast<std::size_t>(col)], mag);
 	}
-
 	const double dtSec = static_cast<double>(numSamples) / sampleRate_;
 	for (int c = 0; c < kDisplayColumns; ++c)
 	{

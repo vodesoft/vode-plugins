@@ -161,6 +161,8 @@ public:
 
 private:
 	float rawOffset() const;
+	// Processes exactly one fftSize_-sample frame (history must hold >= N).
+	void processFrame(const float* samples, int numSamples);
 
 	bool configured_{false};
 	int fftSize_{0};
