@@ -205,19 +205,28 @@ IPlugView* PLUGIN_API Controller::createView (const char* name)
 CView* Controller::createCustomView (UTF8StringPtr name, const UIAttributes& attributes,
                                      const IUIDescription* /*description*/, VST3Editor* /*editor*/)
 {
+	// The factory never applies "origin" to delegate-created views (it only
+	// runs applyAttributeValues for class-based creation), so position the
+	// view here; otherwise every custom view lands at (0,0).
+	CPoint origin {0, 0};
+	attributes.getPointAttribute ("origin", origin);
 	CRect size {0, 0, 720, 200};
 	attributes.getRectAttribute ("size", size);
 	if (std::string_view (name) == "scopeA")
 	{
 		auto* view = new ScopeView (size);
+		view->setViewSize (CRect (origin, size.getSize ()));
 		view->setLabel ("L");
+		view->setFrameColor ({90, 160, 230, 255}); // blue tint (channel A)
 		scopes_.push_back (view);
 		return view;
 	}
 	if (std::string_view (name) == "scopeB")
 	{
 		auto* view = new ScopeView (size);
+		view->setViewSize (CRect (origin, size.getSize ()));
 		view->setLabel ("R");
+		view->setFrameColor ({230, 170, 80, 255}); // amber tint (channel B)
 		scopes_.push_back (view);
 		return view;
 	}
@@ -225,7 +234,7 @@ CView* Controller::createCustomView (UTF8StringPtr name, const UIAttributes& att
 }
 
 //------------------------------------------------------------------------
-void Controller::didOpen (VST3Editor* /*editor*/)
+void Controller::didOpen (VST3Editor* editor)
 {
 	updateScopeLabels ();
 }

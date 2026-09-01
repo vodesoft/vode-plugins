@@ -69,9 +69,22 @@ void ScopeView::setBalanceMode (bool enabled)
 }
 
 //------------------------------------------------------------------------
+void ScopeView::setFrameColor (CColor c)
+{
+	assertAlive ();
+	frameColor_ = c;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
 void ScopeView::draw (CDrawContext* pContext)
 {
 	const CRect bounds = getViewSize ();
+	// Translate into this view's position within the parent coordinate space.
+	// VSTGUI 4 children are NOT auto-translated; they must render at their
+	// absolute rect. We keep all internal drawing relative to (0,0) by
+	// applying an explicit offset here.
+	CDrawContext::Transform tr (*pContext, CGraphicsTransform ().translate (bounds.left, bounds.top));
 	const int w = static_cast<int> (bounds.getWidth ());
 	const int h = static_cast<int> (bounds.getHeight ());
 	if (w <= 4 || h <= 4)
@@ -86,8 +99,14 @@ void ScopeView::draw (CDrawContext* pContext)
 		return;
 
 	//--- background ---------------------------------------------------------
-	pContext->setFillColor ({30, 30, 30, 255}); // #1E1E1E
+	pContext->setFillColor ({30, 30, 30, 255});
 	pContext->drawRect (CRect (0, 0, w, h), kDrawFilled);
+
+	// Distinct colored border so both panels stay visible even when silent
+	// (a −120 dB spectrum is otherwise indistinguishable from the background).
+	pContext->setFrameColor (frameColor_);
+	pContext->setLineWidth (1.f);
+	pContext->drawRect (CRect (0, 0, w - 1, h - 1), kDrawStroked);
 
 	//--- grid ----------------------------------------------------------------
 	auto colX = [this, plotLeft, plotWidth] (double xNorm) -> CCoord {

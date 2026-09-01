@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "vstgui/lib/cview.h"
+#include "vstgui/lib/cdrawcontext.h" // CColor
 #include "vdplg/spectrum.h"
 
 namespace vdplg {
@@ -25,6 +26,7 @@ public:
 	void setData (const float* dbValues, int numCols); // UI thread only
 	void setLabel (const char* label);                 // UI thread only
 	void setBalanceMode (bool enabled);                // UI thread only
+	void setFrameColor (VSTGUI::CColor c);             // UI thread only
 	int numStoredColumns () const;                    // for tests
 
 protected:
@@ -39,6 +41,7 @@ private:
 	// parse -> function declaration) works as a default member initializer.
 	std::vector<float> dbA_;
 	char label_[8] {'?'};
+	VSTGUI::CColor frameColor_ {90, 90, 90, 255}; // panel border (per-channel tint)
 	bool balanceMode_ {false};
 	bool dead_ {false}; // poison flag: any method call after ~ScopeView throws (tests)
 	vdplg::spectrum::LogFreqMap freqMap_;
