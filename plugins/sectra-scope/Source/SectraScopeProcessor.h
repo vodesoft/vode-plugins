@@ -11,8 +11,11 @@
 
 #include "public.sdk/source/vst/vstaudioeffect.h"
 #include "public.sdk/source/vst/utility/sampleaccurate.h"
+#include "public.sdk/source/vst/utility/dataexchange.h"
+#include "pluginterfaces/vst/ivstmessage.h"
 
 #include "vdplg/spectrum.h"
+#include "scopedata.h"
 
 namespace vdplg {
 namespace sectrascope {
@@ -32,6 +35,8 @@ public:
 	Steinberg::tresult PLUGIN_API initialize (Steinberg::FUnknown* context) SMTG_OVERRIDE;
 	Steinberg::tresult PLUGIN_API terminate () SMTG_OVERRIDE;
 	Steinberg::tresult PLUGIN_API setActive (Steinberg::TBool state) SMTG_OVERRIDE;
+	Steinberg::tresult PLUGIN_API connect (Steinberg::Vst::IConnectionPoint* other) SMTG_OVERRIDE;
+	Steinberg::tresult PLUGIN_API disconnect (Steinberg::Vst::IConnectionPoint* other) SMTG_OVERRIDE;
 	Steinberg::tresult PLUGIN_API process (Steinberg::Vst::ProcessData& data) SMTG_OVERRIDE;
 	Steinberg::tresult PLUGIN_API setupProcessing (Steinberg::Vst::ProcessSetup& newSetup)
 		SMTG_OVERRIDE;
@@ -46,6 +51,8 @@ protected:
 	void syncAnalyzers (double sampleRateHz);
 	void runAnalysis (const Steinberg::Vst::Sample32* left,
 	                  const Steinberg::Vst::Sample32* right, Steinberg::int32 numSamples);
+	// Push the latest spectra snapshot into a data-exchange block for the UI.
+	void sendScopeData ();
 
 	//--- parameters ------------------------------------------------------
 	Steinberg::Vst::SampleAccurate::Parameter fftSizeParam_;
@@ -68,6 +75,9 @@ protected:
 	spectrum::SpectrumAnalyzer analyzerB_;
 	std::vector<float> mixA_;
 	std::vector<float> mixB_;
+
+	//--- data exchange (processor -> controller) -------------------------
+	Steinberg::Vst::DataExchangeHandler scopeExchange_;
 
 	// last applied analyzer config (for change detection)
 	int cfgFftSize_ {0};

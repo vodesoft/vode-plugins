@@ -7,17 +7,20 @@
 #include "Controller.h"
 #include "sectraparamids.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 
 namespace vdplg {
 namespace sectrascope {
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
+using namespace VSTGUI;
 
 namespace {
 
@@ -156,6 +159,108 @@ tresult PLUGIN_API Controller::getParamValueByString (ParamID tag, TChar* string
 			return kResultTrue;
 		default:
 			return EditController::getParamValueByString(tag, string, valueNormalized);
+	}
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API Controller::setParamNormalized (ParamID tag, ParamValue valueNormalized)
+{
+	auto result = EditController::setParamNormalized (tag, valueNormalized);
+	if (tag == kModeId)
+	{
+		modeIndex_ = choiceIndexFromNormalized (valueNormalized, kNumModes);
+		updateScopeLabels ();
+	}
+	return result;
+}
+
+//------------------------------------------------------------------------
+void Controller::updateScopeLabels ()
+{
+	const bool balance = (modeIndex_ == static_cast<int> (spectrum::ChannelMode::kMBalance));
+	static const char* lrA[] = {"L", "M"};
+	static const char* lrB[] = {"R", "S"};
+	for (size_t i = 0; i < scopes_.size (); ++i)
+	{
+		if (!scopes_[i])
+			continue;
+		scopes_[i]->setLabel ((i == 0) ? lrA[modeIndex_] : lrB[modeIndex_]);
+		scopes_[i]->setBalanceMode (balance && (i == 1));
+	}
+}
+
+//------------------------------------------------------------------------
+IPlugView* PLUGIN_API Controller::createView (const char* name)
+{
+	std::string_view viewName (name);
+	if (viewName == ViewType::kEditor)
+	{
+		auto* editor = new VST3Editor (this, "view", "editor.uidesc");
+		return editor;
+	}
+	return nullptr;
+}
+
+//------------------------------------------------------------------------
+CView* Controller::createCustomView (UTF8StringPtr name, const UIAttributes& attributes,
+                                     const IUIDescription* /*description*/, VST3Editor* /*editor*/)
+{
+	CRect size {0, 0, 720, 200};
+	attributes.getRectAttribute ("size", size);
+	if (std::string_view (name) == "scopeA")
+	{
+		auto* view = new ScopeView (size);
+		view->setLabel ("L");
+		scopes_.push_back (view);
+		return view;
+	}
+	if (std::string_view (name) == "scopeB")
+	{
+		auto* view = new ScopeView (size);
+		view->setLabel ("R");
+		scopes_.push_back (view);
+		return view;
+	}
+	return nullptr;
+}
+
+//------------------------------------------------------------------------
+void Controller::didOpen (VST3Editor* /*editor*/)
+{
+	updateScopeLabels ();
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API Controller::notify (IMessage* message)
+{
+	if (dataExchange_.onMessage (message))
+		return kResultTrue;
+	return EditController::notify (message);
+}
+
+//------------------------------------------------------------------------
+void PLUGIN_API Controller::queueOpened (DataExchangeUserContextID userContextID, uint32 blockSize,
+                                         TBool& dispatchOnBackgroundThread)
+{
+	dispatchOnBackgroundThread = false; // keep it simple: repaint on the main thread
+}
+
+//------------------------------------------------------------------------
+void PLUGIN_API Controller::queueClosed (DataExchangeUserContextID userContextID) {}
+
+//------------------------------------------------------------------------
+void PLUGIN_API Controller::onDataExchangeBlocksReceived (DataExchangeUserContextID userContextID,
+                                                          uint32 numBlocks, DataExchangeBlock* blocks,
+                                                          TBool onBackgroundThread)
+{
+	if (userContextID != kScopeQueueId || numBlocks == 0)
+		return;
+	const auto* data = reinterpret_cast<const ScopeData*> (blocks[numBlocks - 1].data);
+	for (auto* scope : scopes_)
+	{
+		if (!scope)
+			continue;
+		scope->setData ((scope == scopes_[0]) ? data->a : data->b, ScopeData::kNumCols);
 	}
 }
 

@@ -26,6 +26,12 @@ using namespace Steinberg::Vst;
 
 //------------------------------------------------------------------------
 Processor::Processor ()
+	: scopeExchange_ (this, [this] (auto& config, const auto&) {
+		  config.blockSize = scopeDataSize ();
+		  config.numBlocks = 8;
+		  config.userContextID = static_cast<DataExchangeUserContextID> (kScopeQueueId);
+		  return true;
+	  })
 {
 	setControllerClass (kControllerUID);
 
@@ -144,8 +150,27 @@ tresult PLUGIN_API Processor::terminate ()
 }
 
 //------------------------------------------------------------------------
+tresult PLUGIN_API Processor::connect (IConnectionPoint* other)
+{
+	auto result = AudioEffect::connect (other);
+	scopeExchange_.onConnect (other, getHostContext ());
+	return result;
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API Processor::disconnect (IConnectionPoint* other)
+{
+	scopeExchange_.onDisconnect (other);
+	return AudioEffect::disconnect (other);
+}
+
+//------------------------------------------------------------------------
 tresult PLUGIN_API Processor::setActive (TBool state)
 {
+	if (state)
+		scopeExchange_.onActivate (processSetup);
+	else
+		scopeExchange_.onDeactivate ();
 	return AudioEffect::setActive (state);
 }
 
@@ -161,6 +186,24 @@ tresult PLUGIN_API Processor::canProcessSampleSize (int32 symbolicSampleSize)
 	if (symbolicSampleSize == kSample32)
 		return kResultTrue;
 	return kResultFalse;
+}
+
+//------------------------------------------------------------------------
+void Processor::sendScopeData ()
+{
+	if (!scopeExchange_.isEnabled ())
+		return;
+	auto block = scopeExchange_.getCurrentOrNewBlock ();
+	if (block.blockID == InvalidDataExchangeBlockID)
+		return; // queue full — drop this frame's snapshot
+	auto* data = reinterpret_cast<ScopeData*> (block.data);
+	const auto& sa = analyzerA_.spectrum ();
+	const auto& sb = analyzerB_.spectrum ();
+	for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sa.size ()); ++i)
+		data->a[i] = sa[i];
+	for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sb.size ()); ++i)
+		data->b[i] = sb[i];
+	scopeExchange_.sendCurrentBlock ();
 }
 
 //------------------------------------------------------------------------
@@ -244,6 +287,8 @@ tresult PLUGIN_API Processor::process (ProcessData& data)
 	// Analysis path (read-only on input buffers).
 	const Sample32* right = (numChannels > 1) ? in32[1] : in32[0];
 	runAnalysis (in32[0], right, data.numSamples);
+
+	sendScopeData ();
 
 	endAllChanges ();
 	return kResultOk;

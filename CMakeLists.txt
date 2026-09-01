@@ -45,7 +45,6 @@ endif()
 # ---------------------------------------------------------------------------
 set(SMTG_CREATE_PLUGIN_LINK OFF CACHE BOOL "" FORCE)   # no admin symlink step
 set(SMTG_RUN_VST_VALIDATOR  OFF CACHE BOOL "" FORCE)   # no validator target
-set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE) # textless editor
 
 list(APPEND CMAKE_MODULE_PATH "${VDPLG_SDK_ROOT}/cmake/modules")
 include(SMTG_VST3_SDK)
@@ -61,6 +60,11 @@ smtg_create_pluginterfaces_target()      # -> pluginterfaces
 smtg_create_public_sdk_common_target()   # -> sdk_common
 smtg_create_public_sdk_target()          # -> sdk
 smtg_create_public_sdk_hosting_target()  # -> sdk_hosting (used by vst3testhost)
+
+# VSTGUI support (opt-in per SDK cmake README): builds the `vstgui`,
+# `vstgui_uidescription` and `vstgui_support` static libs. Plugins that need a
+# GUI link `vstgui_support`; passthrough stays textless and does not.
+smtg_enable_vstgui_support(VSTGUI_SOURCE_DIR "${VDPLG_SDK_ROOT}/vstgui4")
 
 # moduleinfotool: small utility that writes Contents/Resources/moduleinfo.json
 # into each built .vst3 bundle (post-build step of smtg_add_vst3plugin).

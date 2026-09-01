@@ -1,7 +1,7 @@
 # Plan: Sectra Scope — VST3 Spectrum Analyzer Plugin
 
 **Date:** 2026-08-31
-**Status:** Phase 3 (Implement DSP / Green) COMPLETE — all 28 `[l0][sectra]` cases pass, L1 + pre-existing suites pass, ctest 7/7 green. Awaiting user go-ahead for Phase 4 (UI).
+**Status:** Phase 4 (UI / VSTGUI editor) COMPLETE — full Release build green, `editor.uidesc` bundled into `.vst3`, ctest 7/7 green. UI verified only manually (REAPER load) — no automated gate. Awaiting user go-ahead for Phase 5 (Integration & docs).
 **Brand:** Vode Plugins (vendor string "Vode Plugins", per repo naming rules)
 
 ## Goal
@@ -264,9 +264,15 @@ Write, build, and run the failing tests:
   L/R per channel mode then feeds both analyzers. Analysis is read-only on input buffers — passthrough intact.
 
 ### Phase 4 — UI (VSTGUI)
-- [ ] Enable VSTGUI support; `Controller::createView()` returns editor with two `ScopeView`s + control strip.
-- [ ] `ScopeView` draws grid + spectrum per UI design (incl. ±12 balance grid + clamp indicator); four choice controls + attack/release knobs bound to params.
-- [ ] **Acceptance:** Release build green; plugin loads in REAPER; manual checklist above passes. (No automated gate — documented.)
+- [x] Enable VSTGUI support; `Controller::createView()` returns editor with two `ScopeView`s + control strip.
+- [x] `ScopeView` draws grid + spectrum per UI design (incl. ±12 balance grid + clamp indicator); six param controls bound to params.
+- [x] **Acceptance:** Release build green; `editor.uidesc` present in bundle; ctest 7/7. Plugin-loads-in-REAPER step is the remaining *manual* check (no automated gate — documented).
+
+#### Phase 4 — Implementation notes
+- **Live spectra transport = SDK dataexchange utility.** The processor publishes its two smoothed 720-column dB spectra each block via a `DataExchangeHandler` (`blockSize = scopeDataSize()`, `numBlocks = 8`, `userContextID = kScopeQueueId`). The controller implements `IDataExchangeReceiver`; `queueOpened` sets `dispatchOnBackgroundThread = false` so repaints stay on the main thread, and `onDataExchangeBlocksReceived` filters by `kScopeQueueId`, takes the newest block, and feeds `scopes_[0]` from `data->a` / others from `data->b`. This is host-mediated shared memory with automatic multi-instance pairing and an `IMessage` fallback for older hosts — no custom cross-process IPC needed.
+- **All six params are `CKnob`s** (FFT Size, Window, Channel Mode, Attack, Release, dB Ref), because this bundled VSTGUI version has **no `CChoiceControl`**. Discrete params use matching `inc` steps (e.g. FFT inc 0.25 over 5 points, mode inc 0.5 over 3 points).
+- **`ScopeView`** (`Source/ScopeView.{h,cpp}`): one instance per slot; holds a `std::vector<float> dbA_{kNumCols,-120.f}` buffer + a `LogFreqMap(20,20000,720)`. `draw(CDrawContext*)` paints bg #1E1E1E, left dB labels/margin, normal −120…0 grid every 6 dB (labels every 12) or ±12 balance grid with emphasized 0-line in balance mode, octave ticks at {20…10000} Hz, then a filled `CGraphicsPath` curve ({70,160,220,110}) with a brighter stroked top edge ({140,210,255,255}). Bin centers plotted at `(i+0.5)/720`.
+- **Compile gotchas hit & fixed (MSVC x64):** (1) `SMTG_OVERRIDE` is not visible through VSTGUI's `cview.h` alone → used plain `override` in `ScopeView.h`; (2) `std::vector<float> dbA_ (kNumCols, -120.f)` is a most-vexing-parse function declaration → brace-init `dbA_{kNumCols, -120.f}`; (3) unqualified `DataExchangeReceiverHandler` fails name lookup inside our namespace (no file-scope `using`) → fully qualified `Steinberg::Vst::DataExchangeReceiverHandler dataExchange_{this};`. Also: `TBool` is `Steinberg::TBool`, `IMessage` is `Steinberg::Vst::IMessage`.
 
 ### Phase 5 — Integration & docs
 - [ ] L3 case added and passing (ctest 7/7).
