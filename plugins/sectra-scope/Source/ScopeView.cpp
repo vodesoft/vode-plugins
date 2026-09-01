@@ -6,7 +6,7 @@
 #include "vstgui/lib/cgraphicspath.h"
 
 #include <cmath>
-#include <cstdio>
+#include <stdexcept>
 
 namespace vdplg {
 namespace sectrascope {
@@ -19,12 +19,29 @@ ScopeView::ScopeView (const CRect& size)
 	: CView (size)
 	, freqMap_ (20.0, 20000.0, kNumCols)
 {
+	dbA_.assign (kNumCols, -120.f);
 	setWantsFocus (false);
+}
+
+//------------------------------------------------------------------------
+// Poison guard: ~CView() is noexcept, so the destructor only marks the
+// object dead; any later method access throws instead of silently writing
+// into freed memory (which used to corrupt the host heap).
+ScopeView::~ScopeView ()
+{
+	dead_ = true;
+}
+
+void ScopeView::assertAlive ()
+{
+	if (dead_)
+		throw std::runtime_error ("ScopeView used after destruction");
 }
 
 //------------------------------------------------------------------------
 void ScopeView::setData (const float* dbValues, int numCols)
 {
+	assertAlive ();
 	if (!dbValues)
 		return;
 	for (int i = 0; i < kNumCols && i < numCols; ++i)
@@ -35,6 +52,7 @@ void ScopeView::setData (const float* dbValues, int numCols)
 //------------------------------------------------------------------------
 void ScopeView::setLabel (const char* label)
 {
+	assertAlive ();
 	int n = 0;
 	while (label && label[n] && n + 1 < static_cast<int> (sizeof (label_)))
 		label_[n] = label[n++];
@@ -45,6 +63,7 @@ void ScopeView::setLabel (const char* label)
 //------------------------------------------------------------------------
 void ScopeView::setBalanceMode (bool enabled)
 {
+	assertAlive ();
 	balanceMode_ = enabled;
 	invalid ();
 }

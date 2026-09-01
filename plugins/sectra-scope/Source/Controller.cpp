@@ -231,6 +231,17 @@ void Controller::didOpen (VST3Editor* /*editor*/)
 }
 
 //------------------------------------------------------------------------
+void Controller::willClose (VST3Editor* /*editor*/)
+{
+	// VSTGUI destroys every view of the frame right after this callback
+	// (VST3Editor::close -> getFrame()->removeAll(true)), so our raw pointers
+	// are dead from here on. Drop them; the next editor open re-registers via
+	// createCustomView(). Without this, onDataExchangeBlocksReceived would keep
+	// writing spectra into freed memory while playback runs (heap corruption).
+	scopes_.clear ();
+}
+
+//------------------------------------------------------------------------
 tresult PLUGIN_API Controller::notify (IMessage* message)
 {
 	if (dataExchange_.onMessage (message))

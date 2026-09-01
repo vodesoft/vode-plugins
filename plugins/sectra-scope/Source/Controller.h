@@ -55,6 +55,9 @@ public:
 		SMTG_OVERRIDE;
 	Steinberg::IPlugView* PLUGIN_API createView (const char* name) SMTG_OVERRIDE;
 
+	int scopeCount () const { return static_cast<int> (scopes_.size ()); } // for tests
+	const std::vector<ScopeView*>& scopeViews () const { return scopes_; } // for tests
+
 	//--- IDataExchangeReceiver ---------------------------------------------
 	void PLUGIN_API queueOpened (Steinberg::Vst::DataExchangeUserContextID userContextID,
 	                             Steinberg::uint32 blockSize, Steinberg::TBool& dispatchOnBackgroundThread)
@@ -74,6 +77,7 @@ public:
 	                                 const VSTGUI::IUIDescription* description, VSTGUI::VST3Editor* editor)
 		SMTG_OVERRIDE;
 	void didOpen (VSTGUI::VST3Editor* editor) SMTG_OVERRIDE;
+	void willClose (VSTGUI::VST3Editor* editor) SMTG_OVERRIDE;
 
 private:
 	void updateScopeLabels ();

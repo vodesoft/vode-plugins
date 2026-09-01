@@ -10,9 +10,13 @@
 #include <catch2/catch_approx.hpp>
 
 #include "SectraScopeProcessor.h"
+#include "Controller.h"
+#include "ScopeView.h"
+#include "scopedata.h"
 #include "sectraparamids.h"
 
 #include "public.sdk/source/vst/vstparameters.h"
+#include "vstgui/uidescription/uiattributes.h"
 
 #include <cmath>
 #include <vector>
@@ -400,4 +404,111 @@ TEST_CASE("L1: sample-rate change mid-stream does not break passthrough", "[l1][
 	delete[] outBus.channelBuffers32;
 	proc.setActive(false);
 	proc.terminate();
+}
+
+//------------------------------------------------------------------------
+// Studio One crash regressions:
+//  - dbA_ buffer sizing: brace-init {kNumCols, -120.f} bound to
+//    std::vector's initializer_list ctor and created a 2-element buffer;
+//    setData then wrote 720 floats past the end -> STATUS_HEAP_CORRUPTION.
+//  - Editor lifetime: VSTGUI owns the views returned from createCustomView()
+//    and destroys them when the editor closes (VST3Editor::close -> willClose
+//    -> frame removeAll). The controller must drop its raw ScopeView* list in
+//    willClose(); ScopeView carries a debug poison guard so a stale access
+//    throws instead of corrupting the heap.
+namespace {
+
+void feedScopeBlock(Controller& c)
+{
+	// A host registers the custom views once per open editor; only do so
+	// when no generation is currently registered (fresh editor open).
+	if (c.scopeCount () == 0)
+	{
+		VSTGUI::UTF8StringPtr names[2] = {"scopeA", "scopeB"};
+		VSTGUI::UIAttributes attrs[2]; // no attributes: default size used
+		c.createCustomView (names[0], attrs[0], nullptr, nullptr);
+		c.createCustomView (names[1], attrs[1], nullptr, nullptr);
+	}
+
+	ScopeData data {};
+	for (int i = 0; i < ScopeData::kNumCols; ++i)
+	{
+		data.a[i] = -60.f + static_cast<float> (i % 7);
+		data.b[i] = -55.f + static_cast<float> (i % 5);
+	}
+
+	Steinberg::uint32 blockSize = scopeDataSize ();
+	Steinberg::Vst::DataExchangeBlock block {static_cast<void*> (&data), blockSize, 42};
+	TBool background = false;
+	c.queueOpened (kScopeQueueId, blockSize, background);
+	c.onDataExchangeBlocksReceived (kScopeQueueId, 1, &block, false);
+	c.queueClosed (kScopeQueueId);
+}
+
+} // namespace
+
+TEST_CASE("L1: [iso] construct and destroy two bare ScopeViews", "[l1][sectrascope]")
+{
+	VSTGUI::CRect r {0, 0, 720, 200};
+	for (int i = 0; i < 3; ++i)
+	{
+		auto* v1 = new ScopeView (r);
+		v1->setLabel ("L");
+		REQUIRE(v1->numStoredColumns () == ScopeData::kNumCols);
+		delete v1;
+		auto* v2 = new ScopeView (r);
+		v2->setLabel ("R");
+		REQUIRE(v2->numStoredColumns () == ScopeData::kNumCols);
+		delete v2;
+	}
+	SUCCEED();
+}
+
+TEST_CASE("L1: Sectra Scope controller drops scope views when the editor closes", "[l1][sectrascope]")
+{
+	Controller c;
+	REQUIRE(c.initialize (nullptr) == kResultOk);
+
+	feedScopeBlock (c); // open editor #1 + first spectrum update
+	REQUIRE(c.scopeCount () == 2);
+
+	// Host closes the editor window: willClose fires, then VSTGUI deletes all
+	// views of the frame. Capture the live pointers first, then simulate both
+	// halves exactly as VST3Editor::close() does them.
+	auto* gen1A = c.scopeViews ().at (0);
+	auto* gen1B = c.scopeViews ().at (1);
+	c.willClose (nullptr);
+	delete gen1A;
+	delete gen1B;
+
+	// Playback continues: another spectrum update must not touch the dead
+	// views. Pre-fix this wrote into freed memory (heap corruption in Studio
+	// One); with the poison guard it would throw instead.
+	REQUIRE_NOTHROW(feedScopeBlock (c));
+
+	c.terminate ();
+}
+
+TEST_CASE("L1: Sectra Scope keeps feeding only live views after an editor close/reopen cycle", "[l1][sectrascope]")
+{
+	Controller c;
+	REQUIRE(c.initialize (nullptr) == kResultOk);
+
+	feedScopeBlock (c); // editor generation 1
+	REQUIRE(c.scopeCount () == 2);
+
+	auto* gen1A = c.scopeViews ().at (0);
+	auto* gen1B = c.scopeViews ().at (1);
+	c.willClose (nullptr);
+	delete gen1A;
+	delete gen1B;
+
+	feedScopeBlock (c); // host reopens the editor -> fresh views registered
+	REQUIRE(c.scopeCount () == 2); // no unbounded growth across generations
+
+	// A further update reaches exactly the two live views and nothing else.
+	REQUIRE_NOTHROW(feedScopeBlock (c));
+	REQUIRE(c.scopeCount () == 2);
+
+	c.terminate ();
 }

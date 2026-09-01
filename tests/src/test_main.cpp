@@ -6,6 +6,14 @@
 
 #include <catch2/catch_session.hpp>
 
+#if defined(_WIN32)
+// The SDK's vstguieditor.cpp calls Steinberg::getPlatformModuleHandle(), which
+// reads the global-scope moduleHandle normally defined by a plugin DLL's dllmain.cpp.
+// Our test exe is not a DLL, so provide the symbol here (nullptr = no module).
+#include <cstddef>
+void* moduleHandle = nullptr;
+#endif
+
 int main(int argc, char* argv[]) {
     Catch::Session session;
     return session.run(argc, argv);

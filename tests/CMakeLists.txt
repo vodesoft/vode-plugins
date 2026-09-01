@@ -16,6 +16,9 @@ target_link_libraries(vdplg_tests
     PRIVATE
         common
         sdk
+        # Controller/ScopeView lifetime regression tests exercise the VSTGUI
+        # editor delegate path (createCustomView/willClose).
+        vstgui_support
         # NOTE: Catch2WithMain defines `wmain` on Windows, but our console exe
         # links the CRT that requires `main`. We use plain Catch2 + our own
         # shim in src/test_main.cpp that runs the Catch session from `main`.
@@ -32,13 +35,21 @@ target_sources(vdplg_tests
         ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source/passthroughparamids.h
         ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/SectraScopeProcessor.h
         ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/SectraScopeProcessor.cpp
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/Controller.h
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/Controller.cpp
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/ScopeView.h
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/ScopeView.cpp
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/scopedata.h
         ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/sectracids.h
         ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/sectraparamids.h
 )
 target_include_directories(vdplg_tests
     PRIVATE
-        ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source
-        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source
+    # Order matters: both plugins ship a Controller.h; sectra-scope must win
+    # for the editor-lifetime tests. (Only Controller.h collides — the
+    # processors are named Processor.h / SectraScopeProcessor.h.)
+    ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source
+    ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source
 )
 
 target_compile_features(vdplg_tests PRIVATE cxx_std_17)

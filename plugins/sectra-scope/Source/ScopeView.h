@@ -20,22 +20,34 @@ class ScopeView : public VSTGUI::CView
 {
 public:
 	ScopeView (const VSTGUI::CRect& size);
+	~ScopeView () override; // marks the object dead (debug poison guard)
 
 	void setData (const float* dbValues, int numCols); // UI thread only
 	void setLabel (const char* label);                 // UI thread only
 	void setBalanceMode (bool enabled);                // UI thread only
+	int numStoredColumns () const;                    // for tests
 
 protected:
 	void draw (VSTGUI::CDrawContext* pContext) override;
 
 private:
+	void assertAlive (); // debug-only: throws if called after destruction
 	static constexpr int kNumCols = 720;
 
-	std::vector<float> dbA_{kNumCols, -120.f};
+	// Sized in the ctor body: neither brace-init {n, v} (binds to
+	// initializer_list -> 2-element buffer!) nor paren-init (n, v) (vexing
+	// parse -> function declaration) works as a default member initializer.
+	std::vector<float> dbA_;
 	char label_[8] {'?'};
 	bool balanceMode_ {false};
+	bool dead_ {false}; // poison flag: any method call after ~ScopeView throws (tests)
 	vdplg::spectrum::LogFreqMap freqMap_;
 };
+
+inline int ScopeView::numStoredColumns () const
+{
+	return static_cast<int> (dbA_.size ());
+}
 
 } // namespace sectrascope
 } // namespace vdplg
