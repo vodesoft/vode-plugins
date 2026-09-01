@@ -31,10 +31,17 @@ set(VDPLG_L3_PLUGIN_PATH "${VDPLG_L3_PLUGIN_DIR}/passthrough.vst3")
 file(GLOB VDPLG_L3_CASES "${CMAKE_SOURCE_DIR}/testdata/cases/*.json")
 foreach(caseFile ${VDPLG_L3_CASES})
     get_filename_component(caseName ${caseFile} NAME_WE)
+    # Cases may target a specific plugin bundle: sectra_* -> sectrascope.vst3.
+    # The explicit --plugin overrides any "plugin" field in the case file.
+    if(caseName MATCHES "^sectra_")
+        set(l3PluginPath "$<TARGET_FILE_DIR:sectrascope>/sectrascope.vst3")
+    else()
+        set(l3PluginPath "${VDPLG_L3_PLUGIN_PATH}")
+    endif()
     add_test(NAME "l3_${caseName}"
              COMMAND vst3testhost
                      --case "${caseFile}"
-                     --plugin "${VDPLG_L3_PLUGIN_PATH}"
+                     --plugin "${l3PluginPath}"
                      --report json)
     # Resolve paths relative to the repo root at test time.
     set_tests_properties("l3_${caseName}" PROPERTIES

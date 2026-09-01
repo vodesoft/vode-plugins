@@ -466,7 +466,7 @@ struct AssertionResult
 };
 
 double evalMetric(const std::string& expr, const vdplg::WavFile& in, const vdplg::WavFile& out,
-                  std::string& err)
+                  int paramCount, std::string& err)
 {
 	auto parseExpr = [](const std::string& e, std::string& metric, std::string& target,
                         std::string& arg) {
@@ -483,6 +483,8 @@ double evalMetric(const std::string& expr, const vdplg::WavFile& in, const vdplg
 
 	std::string auto_metric, auto_target, auto_arg;
 	parseExpr(trim(expr), auto_metric, auto_target, auto_arg);
+	if (toLower(auto_metric) == "param_count")
+		return static_cast<double>(paramCount);
 	const vdplg::WavFile* wav = nullptr;
 	if (toLower(auto_target) == "in")
 		wav = &in;
@@ -526,6 +528,7 @@ double evalMetric(const std::string& expr, const vdplg::WavFile& in, const vdplg
 }
 
 double parseRhs(const std::string& rhs, const vdplg::WavFile& in, const vdplg::WavFile& out,
+                 int paramCount,
                 std::string& err)
 {
 	std::string t = trim(rhs);
@@ -536,7 +539,7 @@ double parseRhs(const std::string& rhs, const vdplg::WavFile& in, const vdplg::W
 	if (tLower.size() > 2 && tLower.compare(tLower.size() - 2, 2, "db") == 0)
 		return std::stod(t.substr(0, t.size() - 2));
 	if (t.find('(') != std::string::npos)
-		return evalMetric(t, in, out, err);
+		return evalMetric(t, in, out, paramCount, err);
 	try
 	{
 		return std::stod(t);
@@ -549,6 +552,7 @@ double parseRhs(const std::string& rhs, const vdplg::WavFile& in, const vdplg::W
 }
 
 bool evaluateAssertion(const std::string& text, const vdplg::WavFile& in, const vdplg::WavFile& out,
+                       int paramCount,
                        AssertionResult& result)
 {
 	result.text = text;
@@ -575,13 +579,13 @@ bool evaluateAssertion(const std::string& text, const vdplg::WavFile& in, const 
 	std::string lhsExpr = trim(text.substr(0, opPos));
 	std::string rhsExpr = trim(text.substr(opPos + op.size()));
 
-	double lhs = evalMetric(lhsExpr, in, out, err);
+	double lhs = evalMetric(lhsExpr, in, out, paramCount, err);
 	if (!err.empty())
 	{
 		result.detail = err;
 		return false;
 	}
-	double rhs = parseRhs(rhsExpr, in, out, err);
+	double rhs = parseRhs(rhsExpr, in, out, paramCount, err);
 	if (!err.empty())
 	{
 		result.detail = err;
@@ -677,6 +681,7 @@ std::vector<std::pair<std::string, ParamID>> collectParamNames(
 struct TestCase
 {
 	std::string plugin;
+	std::string pluginCli; // set when --plugin is given explicitly (overrides case file)
 	std::string input;
 	int blockSize = 512;
 	std::string automation;
@@ -745,6 +750,7 @@ struct RunResult
 	std::string error;
 	vdplg::WavFile output; // interleaved (sample-major) samples, like WavFile convention
 	uint32 latencySamples = 0;
+	int paramCount = 0; // number of parameters registered by the plugin's controller
 };
 
 RunResult runOffline(const TestCase& tc)
@@ -789,6 +795,8 @@ RunResult runOffline(const TestCase& tc)
 
 	//--- parameter names (via controller) ---------------------------------
 	auto paramNames = collectParamNames(*module, processorClassId);
+
+	rr.paramCount = static_cast<int>(paramNames.size());
 
 	//--- automation events --------------------------------------------------
 	std::vector<AutomationEvent> events;
@@ -1000,7 +1008,10 @@ int main(int argc, char** argv)
 		std::string a = argv[i];
 		auto next = [&]() -> const char* { return (i + 1 < argc) ? argv[++i] : ""; };
 		if (a == "--plugin")
+		{
 			tc.plugin = next();
+			tc.pluginCli = tc.plugin;
+		}
 		else if (a == "--input")
 			tc.input = next();
 		else if (a == "--blocksize")
@@ -1038,6 +1049,10 @@ int main(int argc, char** argv)
 			std::fprintf(stderr, "ERROR: %s\n", err.c_str());
 			return 2;
 		}
+		// An explicit --plugin on the command line overrides the case file
+		// (CTest passes --plugin so each case can target its own bundle).
+		if (!tc.pluginCli.empty())
+			tc.plugin = tc.pluginCli;
 		// Resolve relative paths in the case file against its own directory so
 		// CTest can run from any working directory.
 		auto dirOf = [](std::string p) {
@@ -1099,7 +1114,7 @@ int main(int argc, char** argv)
 		for (const auto& a : tc.assertions)
 		{
 			AssertionResult ar;
-			evaluateAssertion(a, inWav, run.output, ar);
+			evaluateAssertion(a, inWav, run.output, run.paramCount, ar);
 			results.push_back(std::move(ar));
 		}
 

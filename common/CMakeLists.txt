@@ -2,6 +2,7 @@
 add_library(common STATIC
     src/wavio.cpp
     src/analysis.cpp
+    src/spectrum.cpp
     src/dr_wav_impl.cpp
 )
 

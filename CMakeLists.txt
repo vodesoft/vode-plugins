@@ -87,6 +87,7 @@ add_subdirectory(third_party/signalsmith-dsp)
 
 add_subdirectory(common)
 add_subdirectory(plugins/passthrough)
+add_subdirectory(plugins/sectra-scope)
 add_subdirectory(testdata)
 
 if(VDPLG_BUILD_TESTS)

@@ -1,12 +1,15 @@
 # Vode Plugins — L0/L1 Catch2 test suite (`vdplg_tests`).
 #
-# L0: Signalsmith DSP building blocks (biquad, box filter, delay).
+# L0: Signalsmith DSP building blocks + Sectra Scope spectrum DSP.
 # L1: passthrough processor driven directly through process().
+#     Sectra Scope processor driven directly through process().
 
 add_executable(vdplg_tests
     src/test_main.cpp
     l0_dsp.cpp
     l1_passthrough.cpp
+    l0_spectrum.cpp
+    l1_sectra_scope.cpp
 )
 
 target_link_libraries(vdplg_tests
@@ -27,10 +30,15 @@ target_sources(vdplg_tests
         ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source/Processor.cpp
         ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source/passthroughcids.h
         ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source/passthroughparamids.h
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/SectraScopeProcessor.h
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/SectraScopeProcessor.cpp
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/sectracids.h
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source/sectraparamids.h
 )
 target_include_directories(vdplg_tests
     PRIVATE
         ${CMAKE_SOURCE_DIR}/plugins/passthrough/Source
+        ${CMAKE_SOURCE_DIR}/plugins/sectra-scope/Source
 )
 
 target_compile_features(vdplg_tests PRIVATE cxx_std_17)

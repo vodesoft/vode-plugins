@@ -1,7 +1,7 @@
 # Plan: Sectra Scope — VST3 Spectrum Analyzer Plugin
 
 **Date:** 2026-08-31
-**Status:** DRAFT — awaiting approval
+**Status:** Phase 3 (Implement DSP / Green) COMPLETE — all 28 `[l0][sectra]` cases pass, L1 + pre-existing suites pass, ctest 7/7 green. Awaiting user go-ahead for Phase 4 (UI).
 **Brand:** Vode Plugins (vendor string "Vode Plugins", per repo naming rules)
 
 ## Goal
@@ -49,7 +49,7 @@ plugins/sectra-scope/
    ├─ sectracids.h             # FUIDs + category (kFxDynamicsClass? -> kFxAnalyzer subcategory "Fx|Analyzer")
    ├─ sectraparamids.h         # ParamIDs: kFFTSizeID, kWindowTypeID, kModeID, kAttackID, kReleaseID, kDbRefID
    ├─ version.h
-   ├─ Processor.h/.cpp         # AudioEffect: passthrough audio + SpectrumAnalyzer per channel
+  ├─ SectraScopeProcessor.h/.cpp  # AudioEffect: passthrough audio + SpectrumAnalyzer per channel (renamed from Processor.* to avoid header collision with passthrough in the combined test exe)
    ├─ Controller.h/.cpp        # EditController: params + createView() -> CVSTGEditor
    ├─ ScopeView.h/.cpp         # VSTGUI CView: draws log-freq spectrum + dB grid (one instance per scope slot)
    └─ resource/editor.uidesc   # window: 2 stacked scope slots + choice controls + attack/release knobs
@@ -66,7 +66,7 @@ tests/
 ├─ l0_spectrum.cpp             # NEW: LogFreqMap / DbScale / analyzer unit tests
 └─ l1_sectra_scope.cpp         # NEW: processor process() tests
 testdata/cases/
-└─ l3_sectra_sine.json         # NEW: 440 Hz sine -> peak near x(440 Hz)
+└─ sectra_sine.json            # NEW: 440 Hz sine -> unity passthrough + param_count()==6 (CTest name l3_sectra_sine)
 ```
 
 ### Data flow
@@ -211,7 +211,7 @@ Thread safety: single-producer/single-consumer ring buffer holding a snapshot st
 - [ ] Param changes via fake `IParameterChanges` for **all six** params (FFT size, window, mode, attack, release, dB ref) → `process()` continues, output still equals input.
 - [ ] Sample-rate change (`setSampleRate`) mid-stream → no crash, passthrough intact.
 
-### L3 — `testdata/cases/l3_sectra_sine.json`
+### L3 — `testdata/cases/sectra_sine.json` (CTest name: `l3_sectra_sine`)
 
 - [ ] 440 Hz sine WAV in → process → assertions on output (unity passthrough). Analyzer internals already covered by L0/L1; L3 verifies the full plugin lifecycle with all 6 params registered (correct IDs/names/ranges).
 
@@ -228,16 +228,40 @@ Thread safety: single-producer/single-consumer ring buffer holding a snapshot st
 
 ### Phase 2 — Tests (Red)
 Write, build, and run the failing tests:
-- [ ] `common/include/vdplg/spectrum.h` declared as **empty stubs** (signatures only, bodies `throw std::logic_error("not implemented")` or return sentinel values) so tests compile and FAIL.
-- [ ] `tests/l0_spectrum.cpp`, `tests/l1_sectra_scope.cpp` written per test plan above.
-- [ ] `plugins/sectra-scope/Source/Processor.*` minimal stub (passthrough + **6 params**, analyzer not yet wired) so L1 compiles.
-- [ ] CMake wiring: `add_subdirectory(plugins/sectra-scope)`, new test files into `vdplg_tests`.
-- [ ] **Acceptance:** `ctest` runs the new tests and they **FAIL** (not error) for the right reasons (sentinel values / not-implemented).
+- [x] `common/include/vdplg/spectrum.h` declared as **empty stubs** (signatures only, bodies `throw std::logic_error("not implemented")` or return sentinel values) so tests compile and FAIL.
+- [x] `tests/l0_spectrum.cpp`, `tests/l1_sectra_scope.cpp` written per test plan above.
+- [x] `plugins/sectra-scope/Source/Processor.*` minimal stub (passthrough + **6 params**, analyzer not yet wired) so L1 compiles.
+- [x] CMake wiring: `add_subdirectory(plugins/sectra-scope)`, new test files into `vdplg_tests`.
+- [x] **Acceptance:** `ctest` runs the new tests and they **FAIL** (not error) for the right reasons (sentinel values / not-implemented).
+
+#### Implementation notes (Phase 2, 2026-08-31)
+- Stubs throw `std::logic_error("spectrum: <what> not implemented")`; Catch2 reports these as failed assertions (unexpected exception), never crashes → clean Red.
+- Full plugin skeleton exists already (needed so L1/L3 compile): `SectraScopeProcessor.{h,cpp}` (renamed from `Processor.*` to avoid a header-name collision with passthrough's `Processor.h` in the combined test exe), `Controller.{h,cpp}`, `PluginFactory.cpp`, `version.h`, `sectracids.h`, `sectraparamids.h`. UIDs are fixed forever once committed.
+- Controller is textless but registers all six params with string conversion (`getParamStringByValue`/`getParamValueByString`). SDK 3.8.1 has no `str16FromString` helper — param strings are pure ASCII, copied verbatim into UTF-16 via a small local helper. `TChar`/`String128` live in namespace `Steinberg::Vst` (vsttypes.h), not bare `Steinberg`.
+- `Component::initialize(FUnknown*)` returns `tresult` (via ComponentBase); do NOT compare its result against `kResultOk` after calling it on an object whose override chain resolves to void — keep the call plain.
+- Testhost gained a `param_count()` metric (controller parameter count via sdk_hosting) and per-case plugin routing: cases named `sectra_*` load `sectrascope.vst3`, everything else loads `passthrough.vst3`; explicit `--plugin` always wins. Case file renamed `l3_sectra_sine.json` → `sectra_sine.json` (CTest prepends `l3_` itself; siblings don't carry the prefix).
+- Verified Red state (Release): `vdplg_tests` = 44 cases, 28 failed — exactly the `[l0][sectra]` spectrum cases, each failing with "not implemented"; l1_sectra_scope (5 cases, 10255 assertions) + pre-existing suites pass; ctest 6/7 with only `vdplg_tests` red; `l3_sectra_sine` passes (its role is the Phase 5 gate).
 
 ### Phase 3 — Implement DSP (Green)
-- [ ] Implement `LogFreqMap`, `DbScale`, `ChannelMix`, `MeterBallistics`, `BalanceDiff`, `SpectrumAnalyzer` in `common/src/spectrum.cpp`.
-- [ ] Wire analyzers into `Processor::process()` (two analysis channels per mode, param-driven configure).
+- [x] Implement `LogFreqMap`, `DbScale`, `ChannelMix`, `MeterBallistics`, `BalanceDiff`, `SpectrumAnalyzer` in `common/src/spectrum.cpp`.
+- [x] Wire analyzers into `Processor::process()` (two analysis channels per mode, param-driven configure).
 - [ ] **Acceptance:** all L0 + L1 tests pass; existing 6/6 ctest suite still green.
+      → MET: all 28 `[l0][sectra]` cases pass; L1 + pre-existing suites pass; ctest 7/7 green.
+
+#### Implementation notes (Phase 3, Green)
+- **Normalization:** windowed N-sample frame is zero-padded to P = nextPow2(≥N·16) before the FFT
+  (`signalsmith::fft::ModifiedRealFFT<float>`). Fine bin spacing keeps each peak aligned to the
+  correct log-frequency display column even where the axis is dense (low end), and avoids scalloping.
+  Coherent-gain factor `normFactor = 2/Σwindow` makes a full-scale sine read ≈A regardless of phase/window.
+- **dB reference:** held levels are stored in *normalized* dB; Raw ref applies a constant −3.01 dB offset
+  at the display stage so the ref switch changes live without re-prime. Satisfies raw+rectangular == −3.01 dB
+  and raw(tapered) < norm(tapered) − 1 dB.
+- **Display resolution:** analyzer uses exactly 720 columns over [20 Hz, 20 kHz], matching the
+  `LogFreqMap(20,20000,720)` used by the L0 expected-column math.
+- **Ballistics:** linear travel in dB, rise limited to 24 dB / T_attack (T=0 snaps), fall to 24 dB / T_release.
+- **Processor wiring:** two `SpectrumAnalyzer`s (A/B); `syncAnalyzers(processSetup.sampleRate)` refreshes
+  ballistics every block and rebuilds config only when fft/window/ref/sample-rate change; `runAnalysis` mixes
+  L/R per channel mode then feeds both analyzers. Analysis is read-only on input buffers — passthrough intact.
 
 ### Phase 4 — UI (VSTGUI)
 - [ ] Enable VSTGUI support; `Controller::createView()` returns editor with two `ScopeView`s + control strip.
