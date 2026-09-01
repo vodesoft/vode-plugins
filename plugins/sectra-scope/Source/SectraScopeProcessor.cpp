@@ -201,8 +201,19 @@ void Processor::sendScopeData ()
 	const auto& sb = analyzerB_.spectrum ();
 	for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sa.size ()); ++i)
 		data->a[i] = sa[i];
-	for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sb.size ()); ++i)
-		data->b[i] = sb[i];
+	if (modeIndex_ == static_cast<int> (spectrum::ChannelMode::kMBalance))
+	{
+		// M/(M-S): scope B shows per-column mid-minus-side difference on ±12 dB scale.
+		// Both spectra are already ballistics-smoothed by their respective analyzers.
+		auto bal = spectrum::balancediff::diff (sa, sb);
+		for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (bal.db.size ()); ++i)
+			data->b[i] = bal.db[i];
+	}
+	else
+	{
+		for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sb.size ()); ++i)
+			data->b[i] = sb[i];
+	}
 	scopeExchange_.sendCurrentBlock ();
 }
 
