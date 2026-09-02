@@ -160,8 +160,10 @@ TEST_CASE("L0: DbScale balance view maps +/-12 dB around the middle line",
 {
 	const int h = 200;
 	REQUIRE(DbScale::balanceDbToY(0.0f, h) == Approx(h / 2.0f).margin(1e-3f));
-	REQUIRE(DbScale::balanceDbToY(+12.0f, h) == Approx(0.0f).margin(1e-3f));
-	REQUIRE(DbScale::balanceDbToY(-12.0f, h) == Approx(static_cast<float>(h)).margin(1e-3f));
+	// Inverted vertically so that ZERO SIDE (which clamps to +12 dB) sits LOW on
+	// screen; more side energy (-12 dB) rises toward the top.
+	REQUIRE(DbScale::balanceDbToY(+12.0f, h) == Approx(static_cast<float>(h)).margin(1e-3f));
+	REQUIRE(DbScale::balanceDbToY(-12.0f, h) == Approx(0.0f).margin(1e-3f));
 }
 
 //------------------------------------------------------------------------

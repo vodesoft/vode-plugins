@@ -56,6 +56,13 @@ Processor::Processor ()
 	dbRefParam_.setValue (static_cast<ParamValue> (kDefaultDbRefIndex) /
 	                      static_cast<ParamValue> (kNumDbRefs - 1));
 
+	// Worker delivers each processed snapshot on its own thread; we forward it
+	// into the data-exchange queue for the controller.
+	analysis_.setScopeSink ([this] (const float* a, const float* b,
+	                                const float* balance, int numCols) {
+		pushScopeToExchange (a, b, balance, numCols);
+	});
+
 	resyncParams ();
 }
 
@@ -97,13 +104,11 @@ tresult PLUGIN_API Processor::initialize (FUnknown* context)
 void Processor::syncAnalyzers (double sampleRateHz)
 {
 	using namespace vdplg::spectrum;
-	const double atkSec = attackMs_ / 1000.0;
-	const double relSec = releaseMs_ / 1000.0;
-	analyzerA_.setBallistics (atkSec, relSec);
-	analyzerB_.setBallistics (atkSec, relSec);
-
 	const bool changed = (cfgFftSize_ != fftSize_) ||
 	                     (cfgWindowIndex_ != windowIndex_) ||
+	                     (cfgModeIndex_ != modeIndex_.load ()) ||
+	                     (cfgAttackMs_ != attackMs_) ||
+	                     (cfgReleaseMs_ != releaseMs_) ||
 	                     (cfgDbRefIndex_ != dbRefIndex_) ||
 	                     (cfgSampleRate_ != sampleRateHz);
 	if (!changed)
@@ -111,38 +116,35 @@ void Processor::syncAnalyzers (double sampleRateHz)
 
 	cfgFftSize_ = fftSize_;
 	cfgWindowIndex_ = windowIndex_;
+	cfgModeIndex_ = modeIndex_.load ();
+	cfgAttackMs_ = attackMs_;
+	cfgReleaseMs_ = releaseMs_;
 	cfgDbRefIndex_ = dbRefIndex_;
 	cfgSampleRate_ = sampleRateHz;
 
-	const WindowType win = static_cast<WindowType> (windowIndex_);
-	const DbReference ref = (dbRefIndex_ == 1) ? DbReference::kRaw : DbReference::kNormalized;
-	analyzerA_.configure (fftSize_, win, ref, sampleRateHz);
-	analyzerB_.configure (fftSize_, win, ref, sampleRateHz);
+	// Start or reconfigure the off-thread worker. If it is already running this
+	// applies the new config in place (no thread restart). All FFT work happens
+	// on the worker thread, never here on the audio thread.
+	analysis_.start (buildWorkerConfig ());
 }
 
 //------------------------------------------------------------------------
-void Processor::runAnalysis (const Sample32* left, const Sample32* right, int32 numSamples)
+vdplg::spectrum::AnalysisWorker::Config Processor::buildWorkerConfig () const
 {
 	using namespace vdplg::spectrum;
-	mixA_.resize (numSamples);
-	mixB_.resize (numSamples);
-	for (int32 i = 0; i < numSamples; ++i)
-	{
-		const float l = left[i];
-		const float r = right[i];
-		switch (static_cast<ChannelMode> (modeIndex_))
-		{
-			case ChannelMode::kLR:
-				mixA_[i] = l; mixB_[i] = r; break;
-			case ChannelMode::kMS:
-			case ChannelMode::kMBalance:
-				mixA_[i] = 0.5f * (l + r); mixB_[i] = 0.5f * (l - r); break;
-		}
-	}
-	analyzerA_.process (mixA_.data (), numSamples);
-	analyzerB_.process (mixB_.data (), numSamples);
+	vdplg::spectrum::AnalysisWorker::Config cfg;
+	cfg.fftSize = fftSize_;
+	cfg.window = static_cast<WindowType> (windowIndex_);
+	cfg.ref = (dbRefIndex_ == 1) ? DbReference::kRaw : DbReference::kNormalized;
+	cfg.sampleRateHz = processSetup.sampleRate;
+	cfg.mode = static_cast<ChannelMode> (modeIndex_.load ());
+	cfg.attackSec = attackMs_ / 1000.0;
+	cfg.releaseSec = releaseMs_ / 1000.0;
+	return cfg;
 }
 
+
+//------------------------------------------------------------------------
 //------------------------------------------------------------------------
 tresult PLUGIN_API Processor::terminate ()
 {
@@ -170,7 +172,12 @@ tresult PLUGIN_API Processor::setActive (TBool state)
 	if (state)
 		scopeExchange_.onActivate (processSetup);
 	else
+	{
+		// Stop the analysis worker while inactive (no audio flowing). It is
+		// restarted lazily by syncAnalyzers() on the next processed block.
+		analysis_.stop ();
 		scopeExchange_.onDeactivate ();
+	}
 	return AudioEffect::setActive (state);
 }
 
@@ -189,7 +196,8 @@ tresult PLUGIN_API Processor::canProcessSampleSize (int32 symbolicSampleSize)
 }
 
 //------------------------------------------------------------------------
-void Processor::sendScopeData ()
+void Processor::pushScopeToExchange (const float* a, const float* b,
+                                     const float* balance, int numCols)
 {
 	if (!scopeExchange_.isEnabled ())
 		return;
@@ -197,22 +205,20 @@ void Processor::sendScopeData ()
 	if (block.blockID == InvalidDataExchangeBlockID)
 		return; // queue full — drop this frame's snapshot
 	auto* data = reinterpret_cast<ScopeData*> (block.data);
-	const auto& sa = analyzerA_.spectrum ();
-	const auto& sb = analyzerB_.spectrum ();
-	for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sa.size ()); ++i)
-		data->a[i] = sa[i];
-	if (modeIndex_ == static_cast<int> (spectrum::ChannelMode::kMBalance))
+	std::memset (data, 0, sizeof (ScopeData));
+	const int n = (numCols < ScopeData::kNumCols) ? numCols : ScopeData::kNumCols;
+	for (int i = 0; i < n; ++i)
+		data->a[i] = a[i];
+		if (modeIndex_.load () == static_cast<int> (spectrum::ChannelMode::kMBalance))
 	{
-		// M/(M-S): scope B shows per-column mid-minus-side difference on ±12 dB scale.
-		// Both spectra are already ballistics-smoothed by their respective analyzers.
-		auto bal = spectrum::balancediff::diff (sa, sb);
-		for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (bal.db.size ()); ++i)
-			data->b[i] = bal.db[i];
+		// M/(M-S): scope B shows the precomputed clamped ±12 dB balance view.
+		for (int i = 0; i < n; ++i)
+			data->b[i] = balance[i];
 	}
 	else
 	{
-		for (int i = 0; i < ScopeData::kNumCols && i < static_cast<int> (sb.size ()); ++i)
-			data->b[i] = sb[i];
+		for (int i = 0; i < n; ++i)
+			data->b[i] = b[i];
 	}
 	scopeExchange_.sendCurrentBlock ();
 }
@@ -252,7 +258,6 @@ tresult PLUGIN_API Processor::process (ProcessData& data)
 		resyncParams ();
 	};
 
-	//--- 2) process audio --------------------------------------------------
 	if (data.numInputs == 0 || data.numOutputs == 0)
 	{
 		endAllChanges ();
@@ -296,10 +301,10 @@ tresult PLUGIN_API Processor::process (ProcessData& data)
 	}
 
 	// Analysis path (read-only on input buffers).
+	// Hand the block to the off-thread worker. This only copies samples into a
+	// bounded queue (O(numSamples)) and returns immediately — no FFT here.
 	const Sample32* right = (numChannels > 1) ? in32[1] : in32[0];
-	runAnalysis (in32[0], right, data.numSamples);
-
-	sendScopeData ();
+	analysis_.feed (in32[0], right, data.numSamples);
 
 	endAllChanges ();
 	return kResultOk;
@@ -311,7 +316,7 @@ tresult PLUGIN_API Processor::setState (IBStream* state)
 	IBStreamer streamer (state, kLittleEndian);
 	streamer.writeInt32 (fftSize_);
 	streamer.writeInt32 (windowIndex_);
-	streamer.writeInt32 (modeIndex_);
+	streamer.writeInt32 (modeIndex_.load ());
 	streamer.writeDouble (attackMs_);
 	streamer.writeDouble (releaseMs_);
 	streamer.writeInt32 (dbRefIndex_);

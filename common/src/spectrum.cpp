@@ -124,7 +124,9 @@ float DbScale::balanceDbToY(float db, int heightPx)
 {
 	const float h = static_cast<float>(heightPx);
 	const float r = static_cast<float>(kBalanceRangeDb);
-	const float t = clampF((r - db) / (2.0f * r), 0.0f, 1.0f);
+	// Inverted so that ZERO SIDE (clamped to +12 dB) sits LOW on screen and more
+	// side energy (-12 dB) rises toward the top.
+	const float t = clampF((db + r) / (2.0f * r), 0.0f, 1.0f);
 	return t * h;
 }
 

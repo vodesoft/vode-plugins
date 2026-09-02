@@ -10,6 +10,7 @@ add_executable(vdplg_tests
     l1_passthrough.cpp
     l0_spectrum.cpp
     l1_sectra_scope.cpp
+    l0_analysisworker.cpp
 )
 
 target_link_libraries(vdplg_tests

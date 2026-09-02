@@ -15,7 +15,9 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 
 #include "vdplg/spectrum.h"
+#include "vdplg/analysisworker.h"
 #include "scopedata.h"
+#include <atomic>
 
 namespace vdplg {
 namespace sectrascope {
@@ -49,10 +51,11 @@ protected:
 	void resyncParams ();
 	// Rebuild analyzer config if fft/window/sample-rate changed since last call.
 	void syncAnalyzers (double sampleRateHz);
-	void runAnalysis (const Steinberg::Vst::Sample32* left,
-	                  const Steinberg::Vst::Sample32* right, Steinberg::int32 numSamples);
+	// Build an AnalysisWorker::Config from current cached model values.
+	vdplg::spectrum::AnalysisWorker::Config buildWorkerConfig () const;
 	// Push the latest spectra snapshot into a data-exchange block for the UI.
-	void sendScopeData ();
+	void pushScopeToExchange (const float* a, const float* b,
+	                          const float* balance, int numCols);
 
 	//--- parameters ------------------------------------------------------
 	Steinberg::Vst::SampleAccurate::Parameter fftSizeParam_;
@@ -65,16 +68,15 @@ protected:
 	//--- cached model values ---------------------------------------------
 	int fftSize_ {4096};
 	int windowIndex_ {4}; // Blackman-Harris
-	int modeIndex_ {0};   // L/R
+	std::atomic<int> modeIndex_ {0}; // L/R (read by worker thread)
 	double attackMs_ {0.0};
 	double releaseMs_ {100.0};
 	int dbRefIndex_ {0};  // Normalized
 
 	//--- analysis --------------------------------------------------------
-	spectrum::SpectrumAnalyzer analyzerA_;
-	spectrum::SpectrumAnalyzer analyzerB_;
-	std::vector<float> mixA_;
-	std::vector<float> mixB_;
+	// Off-thread spectrum analysis. The audio thread only feeds samples here;
+	// all FFT/ballistics work happens on the worker thread.
+	vdplg::spectrum::AnalysisWorker analysis_;
 
 	//--- data exchange (processor -> controller) -------------------------
 	Steinberg::Vst::DataExchangeHandler scopeExchange_;
@@ -82,6 +84,9 @@ protected:
 	// last applied analyzer config (for change detection)
 	int cfgFftSize_ {0};
 	int cfgWindowIndex_ {-1};
+	int cfgModeIndex_ {-1};
+	double cfgAttackMs_ {-1.0};
+	double cfgReleaseMs_ {-1.0};
 	int cfgDbRefIndex_ {-1};
 	double cfgSampleRate_ {0.0};
 };
