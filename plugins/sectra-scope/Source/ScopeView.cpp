@@ -8,6 +8,9 @@
 
 #include <cstdio>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <algorithm>
 #include <stdexcept>
 
 namespace vdplg {
@@ -55,10 +58,11 @@ void ScopeView::setData (const float* dbValues, int numCols)
 void ScopeView::setLabel (const char* label)
 {
 	assertAlive ();
-	int n = 0;
-	while (label && label[n] && n + 1 < static_cast<int> (sizeof (label_)))
-		label_[n] = label[n++];
-	label_[n] = '\0';
+	if (!label)
+		return;
+	const size_t len = std::min (sizeof (label_) - 1, std::strlen (label));
+	std::memcpy (label_, label, len);
+	label_[len] = '\0';
 	invalid ();
 }
 

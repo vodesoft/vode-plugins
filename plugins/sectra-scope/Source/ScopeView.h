@@ -28,6 +28,8 @@ public:
 	void setBalanceMode (bool enabled);                // UI thread only
 	void setFrameColor (VSTGUI::CColor c);             // UI thread only
 	int numStoredColumns () const;                    // for tests
+	bool isBalanceMode () const { return balanceMode_; } // for tests
+	const char* label () const { return label_; }        // for tests
 
 protected:
 	void draw (VSTGUI::CDrawContext* pContext) override;

@@ -539,6 +539,47 @@ TEST_CASE("L1: Sectra Scope keeps feeding only live views after an editor close/
 	c.terminate ();
 }
 
+TEST_CASE("L1: [ui] user-initiated performEdit keeps scope captions in sync", "[l1][sectrascope][ui]")
+{
+	// Regression: turning the Channel Mode knob in a DAW reaches the controller
+	// via performEdit(); host-driven automation reaches it via
+	// setParamNormalized(). Both must keep the captions in step with the graph.
+	// (In this bare-controller test there is no IComponentHandler, so we drive
+	// the shared sync logic through setParamNormalized; the performEdit override
+	// calls the same helper.)
+	Controller c;
+	REQUIRE(c.initialize (nullptr) == kResultOk);
+	feedScopeBlock (c); // registers both scope views with default L/R labels
+	REQUIRE(c.scopeCount () == 2);
+	REQUIRE(std::strcmp (c.scopeViews ().at (0)->label (), "L") == 0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (1)->label (), "R") == 0);
+	REQUIRE_FALSE(c.scopeViews ().at (1)->isBalanceMode ());
+
+	// Mid/Side (normalized 0.5): labels flip, second scope leaves balance mode.
+	c.setParamNormalized (kModeId, 0.5);
+	REQUIRE(std::strcmp (c.scopeViews ().at (0)->label (), "M") == 0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (1)->label (), "S") == 0);
+	REQUIRE_FALSE(c.scopeViews ().at (1)->isBalanceMode ());
+
+	// Mid/(Mid-Side) (normalized 1.0): second scope enters balance mode.
+	c.setParamNormalized (kModeId, 1.0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (0)->label (), "M") == 0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (1)->label (), "S") == 0);
+	REQUIRE(c.scopeViews ().at (1)->isBalanceMode ());
+
+	// Back to L/R: everything reverts.
+	c.setParamNormalized (kModeId, 0.0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (0)->label (), "L") == 0);
+	REQUIRE(std::strcmp (c.scopeViews ().at (1)->label (), "R") == 0);
+	REQUIRE_FALSE(c.scopeViews ().at (1)->isBalanceMode ());
+
+	// Non-mode edits must not touch the captions.
+	c.setParamNormalized (kAttackId, 0.3);
+	REQUIRE(std::strcmp (c.scopeViews ().at (0)->label (), "L") == 0);
+
+	c.terminate ();
+}
+
 //------------------------------------------------------------------------
 // F1 (PLAN-ui-screenshots.md): headless UI screenshot capture.
 // The controller must render its attached frame to PNG when it receives the

@@ -207,25 +207,46 @@ tresult PLUGIN_API Controller::getParamValueByString (ParamID tag, TChar* string
 tresult PLUGIN_API Controller::setParamNormalized (ParamID tag, ParamValue valueNormalized)
 {
 	auto result = EditController::setParamNormalized (tag, valueNormalized);
-	if (tag == kModeId)
-	{
-		modeIndex_ = choiceIndexFromNormalized (valueNormalized, kNumModes);
-		updateScopeLabels ();
-	}
+	syncModeUI (tag, valueNormalized);
 	return result;
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API Controller::performEdit (ParamID tag, ParamValue valueNormalized)
+{
+	// User-initiated knob turns reach us here (NOT via setParamNormalized), so
+	// mirror the mode sync to keep scope captions/grid in step with the graph.
+	auto result = EditController::performEdit (tag, valueNormalized);
+	syncModeUI (tag, valueNormalized);
+	return result;
+}
+
+//------------------------------------------------------------------------
+void Controller::syncModeUI (ParamID tag, ParamValue valueNormalized)
+{
+	if (tag != kModeId)
+		return;
+	const int idx = choiceIndexFromNormalized (valueNormalized, kNumModes);
+	if (idx == modeIndex_)
+		return; // no change — avoids redundant invalidation while dragging
+	modeIndex_ = idx;
+	updateScopeLabels ();
 }
 
 //------------------------------------------------------------------------
 void Controller::updateScopeLabels ()
 {
 	const bool balance = (modeIndex_ == static_cast<int> (spectrum::ChannelMode::kMBalance));
+	// Both Mid/Side (idx 1) and Mid/(Mid-Side) (idx 2) caption as M/S; clamp
+	// so we never index past the two-entry tables below.
+	const int li = std::min (modeIndex_, 1);
 	static const char* lrA[] = {"L", "M"};
 	static const char* lrB[] = {"R", "S"};
 	for (size_t i = 0; i < scopes_.size (); ++i)
 	{
 		if (!scopes_[i])
 			continue;
-		scopes_[i]->setLabel ((i == 0) ? lrA[modeIndex_] : lrB[modeIndex_]);
+		scopes_[i]->setLabel ((i == 0) ? lrA[li] : lrB[li]);
 		scopes_[i]->setBalanceMode (balance && (i == 1));
 	}
 }

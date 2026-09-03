@@ -80,6 +80,10 @@ public:
 	//--- IConnectionPoint / message routing ---------------------------------
 	Steinberg::tresult PLUGIN_API notify (Steinberg::Vst::IMessage* message) SMTG_OVERRIDE;
 
+	//--- EditController overrides (user-initiated edits) ---------------------
+	Steinberg::tresult PLUGIN_API performEdit (Steinberg::Vst::ParamID tag,
+	                                           Steinberg::Vst::ParamValue valueNormalized) SMTG_OVERRIDE;
+
 	//--- VST3EditorDelegate --------------------------------------------------
 	VSTGUI::CView* createCustomView (VSTGUI::UTF8StringPtr name, const VSTGUI::UIAttributes& attributes,
 	                                 const VSTGUI::IUIDescription* description, VSTGUI::VST3Editor* editor)
@@ -89,6 +93,7 @@ public:
 
 private:
 	void updateScopeLabels ();
+	void syncModeUI (Steinberg::Vst::ParamID tag, Steinberg::Vst::ParamValue valueNormalized);
 
 	Steinberg::Vst::DataExchangeReceiverHandler dataExchange_{this};
 	std::vector<ScopeView*> scopes_; // [0] = channel A slot, [1] = channel B slot
