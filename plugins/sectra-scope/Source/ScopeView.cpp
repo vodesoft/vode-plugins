@@ -5,6 +5,7 @@
 #include "vstgui/lib/cdrawcontext.h"
 #include "vstgui/lib/cgraphicspath.h"
 
+#include <cstdio>
 #include <cmath>
 #include <stdexcept>
 

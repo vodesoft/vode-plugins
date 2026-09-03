@@ -1,0 +1,17 @@
+{
+  "plugin": "../../build/VST3/Release/sectrascope.vst3",
+  "input": "../wavs/sine_440.wav",
+  "blockSize": 512,
+  "automation": "Channel Mode=0.5@0.5s",
+  "assertions": [
+    "peak(out) >= 0.49",
+    "peak(out) <= 0.51"
+  ],
+  "ui": true,
+  "screenshots": [
+    { "at": "0.25s", "file": "out/ui_mode_lr.png" },
+    { "at": "end", "file": "out/ui_mode_ms.png" }
+  ],
+  "mustDiffer": ["out/ui_mode_lr.png", "out/ui_mode_ms.png"],
+  "reportJson": false
+}

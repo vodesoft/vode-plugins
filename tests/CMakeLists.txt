@@ -11,6 +11,7 @@ add_executable(vdplg_tests
     l0_spectrum.cpp
     l1_sectra_scope.cpp
     l0_analysisworker.cpp
+    l0_png.cpp
 )
 
 target_link_libraries(vdplg_tests

@@ -58,6 +58,14 @@ public:
 	int scopeCount () const { return static_cast<int> (scopes_.size ()); } // for tests
 	const std::vector<ScopeView*>& scopeViews () const { return scopes_; } // for tests
 
+	//--- Debug screenshot support ------------------------------------------
+	// Attaches a VSTGUI frame whose contents can be rendered to PNG on demand
+	// via the "vdplg.debug.screenshot" message (attribute "path"). Used by the
+	// unit tests and the headless test host to capture UI without a DAW.
+	void attachDebugFrame (VSTGUI::CFrame* frame);
+	void detachDebugFrame ();
+	VSTGUI::CFrame* debugFrame () const { return debugFrame_; }
+
 	//--- IDataExchangeReceiver ---------------------------------------------
 	void PLUGIN_API queueOpened (Steinberg::Vst::DataExchangeUserContextID userContextID,
 	                             Steinberg::uint32 blockSize, Steinberg::TBool& dispatchOnBackgroundThread)
@@ -85,6 +93,7 @@ private:
 	Steinberg::Vst::DataExchangeReceiverHandler dataExchange_{this};
 	std::vector<ScopeView*> scopes_; // [0] = channel A slot, [1] = channel B slot
 	int modeIndex_ {kDefaultModeIndex};
+	VSTGUI::CFrame* debugFrame_ {nullptr}; // owned externally; never deleted here
 };
 
 } // namespace sectrascope

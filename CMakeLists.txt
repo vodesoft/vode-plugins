@@ -8,6 +8,9 @@ project(vdplg
     LANGUAGES CXX
 )
 
+# miniz (tinfl) is compiled from C sources into `common`.
+enable_language(C)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

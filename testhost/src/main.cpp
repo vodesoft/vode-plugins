@@ -23,8 +23,16 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#if defined(_WIN32)
+// windows.h min/max macros break std::min below.
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <objbase.h> // CoInitializeEx / CoUninitialize
+#endif
 #include <sstream>
 #include <string>
+#include <map>
 #include <vector>
 
 #include "public.sdk/source/vst/hosting/module.h"
@@ -35,6 +43,9 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 
 #include "vdplg/analysis.h"
+#include "vdplg/png.h"
+#include "pluginterfaces/vst/ivstmessage.h" // IMessage, IConnectionPoint
+#include "pluginterfaces/gui/iplugview.h"   // IPlugView, IPlugFrame, kPlatformTypeHWND
 #include "vdplg/dsp.h"
 #include "vdplg/wavio.h"
 
@@ -676,6 +687,351 @@ std::vector<std::pair<std::string, ParamID>> collectParamNames(
 }
 
 // ---------------------------------------------------------------------------
+// UI screenshot capture (hidden editor window + notify-based PNG render)
+// ---------------------------------------------------------------------------
+struct ScreenshotSpec
+{
+	std::string at;   // "end" | "<seconds>s" | "<samples>"
+	std::string file; // output PNG path
+};
+
+// Golden-image regression compare (F4): captured shot vs committed baseline.
+struct GoldenUiSpec
+{
+	std::string file;          // captured screenshot to check
+	std::string ref;           // baseline PNG under testdata/golden/
+	double maxFraction = 0.01; // fail if diff fraction exceeds this
+	int tolerance = 8;         // per-channel byte tolerance
+};
+
+// TChar is Steinberg::char16 (not wchar_t): convert byte-by-byte (ASCII paths).
+std::basic_string<TChar> toTCharStr(const std::string& s)
+{
+	std::basic_string<TChar> out;
+	out.reserve(s.size());
+	for (unsigned char ch : s)
+		out += static_cast<TChar>(ch);
+	return out;
+}
+
+class ScreenshotMessage : public FUnknown, public IMessage
+{
+public:
+	explicit ScreenshotMessage(FIDString id)
+	{
+		strncpy_s(id_, sizeof(id_), id, _TRUNCATE);
+	}
+
+	uint32 PLUGIN_API addRef() override { return ++refCount_; }
+	uint32 PLUGIN_API release() override
+	{
+		if (--refCount_ == 0)
+		{
+			delete this;
+			return 0;
+		}
+		return refCount_;
+	}
+	tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+	{
+		if (iid == FUnknown::iid || iid == IMessage::iid)
+		{
+			addRef();
+			*obj = static_cast<IMessage*>(this);
+			return kResultTrue;
+		}
+		*obj = nullptr;
+		return kResultFalse;
+	}
+
+	FIDString PLUGIN_API getMessageID() override { return id_; }
+	void PLUGIN_API setMessageID(FIDString id) override
+	{
+		strncpy_s(id_, sizeof(id_), id, _TRUNCATE);
+	}
+	IAttributeList* PLUGIN_API getAttributes() override { return &attrs_; }
+
+	class Attrs : public FUnknown, public IAttributeList
+	{
+	public:
+		explicit Attrs(ScreenshotMessage* owner) : owner_(owner) {}
+		uint32 PLUGIN_API addRef() override { return ++owner_->refCount_; }
+		uint32 PLUGIN_API release() override { return owner_->release(); }
+		tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+		{
+			if (iid == FUnknown::iid || iid == IAttributeList::iid)
+			{
+				addRef();
+				*obj = static_cast<IAttributeList*>(this);
+				return kResultTrue;
+			}
+			*obj = nullptr;
+			return kResultFalse;
+		}
+
+		void setString(AttrID key, const std::string& value)
+		{
+			strings_[key] = value;
+		}
+
+		tresult PLUGIN_API setInt(AttrID, int64) override { return kResultFalse; }
+		tresult PLUGIN_API getInt(AttrID, int64&) override { return kResultFalse; }
+		tresult PLUGIN_API setFloat(AttrID, double) override { return kResultFalse; }
+		tresult PLUGIN_API getFloat(AttrID, double&) override { return kResultFalse; }
+		tresult PLUGIN_API setString(AttrID id, const TChar* str) override
+		{
+			if (!id || !str)
+				return kInvalidArgument;
+			std::string key(id);
+			std::string value;
+			for (uint32 i = 0; str[i]; ++i)
+				value += static_cast<char>(str[i]);
+			strings_[key] = std::move(value);
+			return kResultTrue;
+		}
+		tresult PLUGIN_API getString(AttrID id, TChar* out, uint32 sizeInBytes) override
+		{
+			if (!id || !out)
+				return kInvalidArgument;
+			std::string key(id);
+			auto it = strings_.find(key);
+			if (it == strings_.end())
+				return kResultFalse;
+			const auto& s = it->second;
+			uint32 n = static_cast<uint32>(std::min(s.size(),
+			                                         static_cast<size_t>(sizeInBytes / sizeof(TChar)) - 1));
+			for (uint32 i = 0; i < n; ++i)
+				out[i] = static_cast<TChar>(s[i]);
+			out[n] = 0;
+			return kResultTrue;
+		}
+		tresult PLUGIN_API setBinary(AttrID, const void*, uint32) override { return kResultFalse; }
+		tresult PLUGIN_API getBinary(AttrID, const void*& data, uint32& size) override
+		{
+			data = nullptr;
+			size = 0;
+			return kResultFalse;
+		}
+
+	private:
+		ScreenshotMessage* owner_;
+		std::map<std::string, std::string> strings_;
+		friend class ScreenshotMessage;
+	};
+
+private:
+	char id_[64] {};
+	uint32 refCount_ = 1;
+	Attrs attrs_ {this};
+};
+
+#if defined(_WIN32)
+// Host-side IPlugFrame: VSTGUIEditor::open() calls plugFrame->resizeView()
+// when editing is disabled. A no-op implementation satisfies that call.
+class HostPlugFrame : public FUnknown, public IPlugFrame
+{
+public:
+	uint32 PLUGIN_API addRef() override { return ++refCount_; }
+	uint32 PLUGIN_API release() override
+	{
+		if (--refCount_ == 0)
+		{
+			delete this;
+			return 0;
+		}
+		return refCount_;
+	}
+	tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override
+	{
+		if (iid == FUnknown::iid || iid == IPlugFrame::iid)
+		{
+			addRef();
+			*obj = static_cast<IPlugFrame*>(this);
+			return kResultTrue;
+		}
+		*obj = nullptr;
+		return kResultFalse;
+	}
+	tresult PLUGIN_API resizeView(IPlugView*, ViewRect*) override { return kResultTrue; }
+
+private:
+	uint32 refCount_ = 1;
+};
+#else
+class HostPlugFrame
+{
+public:
+	tresult PLUGIN_API resizeView(void*, void*) { return kResultTrue; }
+	void release() {}
+};
+#endif // _WIN32
+
+struct UiCapture
+{
+	Steinberg::IPtr<IEditController> controller;
+	Steinberg::IPtr<IPlugView> view;
+	HostPlugFrame* plugFrame_ = nullptr;
+	IConnectionPoint* compCp_ = nullptr;
+	IConnectionPoint* ctrlCp_ = nullptr;
+#if defined(_WIN32)
+	HWND hwnd = nullptr;
+#endif
+	bool open = false;
+	std::vector<bool> fired;
+
+	static int64 parseAt(const std::string& at, double sampleRate)
+	{
+		if (at == "end")
+			return INT64_MAX;
+		try
+		{
+			std::size_t pos = 0;
+			double v = std::stod(at, &pos);
+			if (pos < at.size() && at[pos] == 's')
+				return static_cast<int64>(v * sampleRate);
+			return static_cast<int64>(v); // bare number = samples
+		}
+		catch (...)
+		{
+			return -1;
+		}
+	}
+
+	bool init(VST3::Hosting::Module::Ptr module, const TUID& controllerUid,
+	          IComponent* component)
+	{
+		controller = module->getFactory().createInstance<IEditController>(
+		    VST3::UID(controllerUid));
+		if (!controller)
+			return false;
+		if (controller->initialize(nullptr) != kResultOk)
+			return false;
+
+#if defined(_WIN32)
+		WNDCLASSEXA wc {};
+		wc.cbSize = sizeof(WNDCLASSEXA);
+		wc.style = CS_HREDRAW | CS_VREDRAW;
+		wc.lpfnWndProc = DefWindowProcA;
+		wc.hInstance = GetModuleHandleA(nullptr);
+		wc.lpszClassName = "vdplg_testhost_ui";
+		RegisterClassExA(&wc);
+		hwnd = CreateWindowExA(WS_EX_TOOLWINDOW, "vdplg_testhost_ui", "", WS_POPUP,
+		                        -20000, -20000, 720, 560, nullptr, nullptr,
+		                        GetModuleHandleA(nullptr), nullptr);
+		if (!hwnd)
+			return false;
+#endif
+
+		// Connect component <-> controller via IConnectionPoint so the
+		// controller receives parameter changes and can send messages back.
+		void* obj = nullptr;
+		if (component->queryInterface(IConnectionPoint::iid, &obj) != kResultOk || !obj)
+			return false;
+		compCp_ = static_cast<IConnectionPoint*>(obj);
+		obj = nullptr;
+		if (controller->queryInterface(IConnectionPoint::iid, &obj) != kResultOk || !obj)
+		{
+			compCp_->release();
+			compCp_ = nullptr;
+			return false;
+		}
+		ctrlCp_ = static_cast<IConnectionPoint*>(obj);
+		compCp_->connect(ctrlCp_);
+		ctrlCp_->connect(compCp_);
+
+		view = controller->createView("editor");
+		if (!view)
+		{
+			shutdown();
+			return false;
+		}
+
+		plugFrame_ = new HostPlugFrame();
+		view->setFrame(plugFrame_);
+
+		if (view->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != kResultOk)
+		{
+			shutdown();
+			return false;
+		}
+		open = true;
+		return true;
+	}
+
+	std::vector<std::size_t> dueShots(const std::vector<ScreenshotSpec>& shots,
+	                                  const int64* atSamples, int blockStart) const
+	{
+		std::vector<std::size_t> due;
+		for (std::size_t i = 0; i < shots.size(); ++i)
+		{
+			if (fired[i])
+				continue;
+			const int64 t = atSamples[i];
+			if (t <= 0 || t >= INT64_MAX / 2) // skip invalid + "end"
+				continue;
+			if (blockStart >= t)
+				due.push_back(i);
+		}
+		return due;
+	}
+
+	bool fire(std::size_t index, const std::string& path)
+	{
+#if defined(_WIN32)
+		auto msg = new ScreenshotMessage("vdplg.debug.screenshot");
+		msg->getAttributes()->setString("path", toTCharStr(path).c_str());
+		tresult res = ctrlCp_->notify(msg);
+		msg->release();
+		fired[index] = true;
+		return res == kResultTrue;
+#else
+		(void)index;
+		(void)path;
+		return false;
+#endif
+	}
+
+	bool firedAt(std::size_t index) const { return fired[index]; }
+
+	void shutdown()
+	{
+		if (view)
+		{
+			view->removed();
+			view = nullptr;
+		}
+		if (plugFrame_)
+		{
+			plugFrame_->release();
+			plugFrame_ = nullptr;
+		}
+		if (compCp_ && ctrlCp_)
+		{
+			compCp_->disconnect(ctrlCp_);
+			ctrlCp_->disconnect(compCp_);
+		}
+		if (ctrlCp_)
+		{
+			ctrlCp_->release();
+			ctrlCp_ = nullptr;
+		}
+		if (compCp_)
+		{
+			compCp_->release();
+			compCp_ = nullptr;
+		}
+		controller = nullptr;
+#if defined(_WIN32)
+		// NOTE: intentionally NOT calling DestroyWindow/CoUninitialize here.
+		// Tearing down the window while the plugin's VSTGUI frame may still
+		// reference it triggers an AV at process exit; the OS reclaims both
+		// at exit. (KnownIssue: exit-time heap corruption family.)
+#endif
+		open = false;
+	}
+};
+
+// ---------------------------------------------------------------------------
 // test case (JSON)
 // ---------------------------------------------------------------------------
 struct TestCase
@@ -690,6 +1046,10 @@ struct TestCase
 	std::string compareGolden;
 	double tolerance = 1e-6;
 	bool reportJson = false;
+	bool ui = false;
+	std::vector<ScreenshotSpec> screenshots;
+	std::vector<std::string> mustDiffer; // files that must pairwise-differ
+	GoldenUiSpec goldenUi;               // optional golden-image compare (F4)
 };
 
 bool loadCaseFile(const std::string& path, TestCase& tc, std::string& err)
@@ -738,6 +1098,32 @@ bool loadCaseFile(const std::string& path, TestCase& tc, std::string& err)
 		tc.tolerance = v->number;
 	if (auto* v = root.find("reportJson"))
 		tc.reportJson = v->boolean;
+	if (auto* v = root.find("ui"))
+		tc.ui = v->boolean;
+	if (auto* v = root.find("screenshots"))
+		for (const auto& s : v->array)
+		{
+			ScreenshotSpec shot;
+			if (auto* at = s.find("at"))
+				shot.at = at->str;
+			if (auto* file = s.find("file"))
+				shot.file = file->str;
+			tc.screenshots.push_back(std::move(shot));
+		}
+	if (auto* v = root.find("mustDiffer"))
+		for (const auto& f : v->array)
+			tc.mustDiffer.push_back(f.str);
+	if (auto* v = root.find("goldenUi"))
+	{
+		if (auto* f = v->find("file"))
+			tc.goldenUi.file = f->str;
+		if (auto* r = v->find("ref"))
+			tc.goldenUi.ref = r->str;
+		if (auto* m = v->find("maxFraction"))
+			tc.goldenUi.maxFraction = m->number;
+		if (auto* t = v->find("tolerance"))
+			tc.goldenUi.tolerance = static_cast<int>(t->number);
+	}
 	return true;
 }
 
@@ -751,7 +1137,95 @@ struct RunResult
 	vdplg::WavFile output; // interleaved (sample-major) samples, like WavFile convention
 	uint32 latencySamples = 0;
 	int paramCount = 0; // number of parameters registered by the plugin's controller
+	struct Shot
+	{
+		std::string file;
+		bool valid = false;
+	};
+	std::vector<Shot> shots;
+	struct Diff
+	{
+		std::string a;
+		std::string b;
+		bool differ = false; // true when the two files are not byte-identical
+	};
+	std::vector<Diff> diffs;
+	struct Golden
+	{
+		std::string file;
+		std::string ref;
+		double maxFraction = 0.01;
+		int tolerance = 8;
+		bool ok = false;
+		double diffFraction = 0.0;
+	};
+	std::vector<Golden> goldens;
 };
+
+// Minimal PNG sanity check: signature, IHDR dimensions, minimum size.
+bool validateScreenshot(const std::string& path, int expectW, int expectH, std::string& err)
+{
+	std::ifstream f(path, std::ios::binary);
+	if (!f)
+	{
+		err = "cannot open screenshot: " + path;
+		return false;
+	}
+	std::vector<char> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	f.close();
+	const unsigned char pngSig[] = {137, 80, 78, 71, 13, 10, 26, 10};
+	if (buf.size() < 24 || std::memcmp(buf.data(), pngSig, 8) != 0)
+	{
+		err = "not a PNG file: " + path;
+		return false;
+	}
+	if (std::memcmp(buf.data() + 12, "IHDR", 4) != 0)
+	{
+		err = "missing IHDR chunk in " + path;
+		return false;
+	}
+	auto be32 = [&](size_t off) {
+		return (static_cast<uint32>(static_cast<unsigned char>(buf[off])) << 24) |
+		       (static_cast<uint32>(static_cast<unsigned char>(buf[off + 1])) << 16) |
+		       (static_cast<uint32>(static_cast<unsigned char>(buf[off + 2])) << 8) |
+		       static_cast<uint32>(static_cast<unsigned char>(buf[off + 3]));
+	};
+	if (be32(16) != static_cast<uint32>(expectW) || be32(20) != static_cast<uint32>(expectH))
+	{
+		err = "unexpected screenshot size " + std::to_string(be32(16)) + "x" +
+		      std::to_string(be32(20)) + ", expected " + std::to_string(expectW) + "x" +
+		      std::to_string(expectH);
+		return false;
+	}
+	if (buf.size() < 5 * 1024)
+	{
+		err = "suspiciously small PNG (" + std::to_string(buf.size()) + " bytes): " + path;
+		return false;
+	}
+	return true;
+}
+
+// Byte-level compare of two captured PNGs: proves the UI actually changed
+// between two capture points (e.g. channel-mode labels).
+bool pngFilesDiffer(const std::string& a, const std::string& b, std::string& err)
+{
+	auto readAll = [](const std::string& p, std::vector<char>& out, std::string& e) {
+		std::ifstream f(p, std::ios::binary);
+		if (!f)
+		{
+			e = "cannot open " + p;
+			return false;
+		}
+		out.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		return true;
+	};
+	std::vector<char> ba, bb;
+	if (!readAll(a, ba, err))
+		return false;
+	if (!readAll(b, bb, err))
+		return false;
+	return ba != bb;
+}
 
 RunResult runOffline(const TestCase& tc)
 {
@@ -767,6 +1241,12 @@ RunResult runOffline(const TestCase& tc)
 	}
 
 	//--- load module ------------------------------------------------------
+#if defined(_WIN32)
+	// The plugin DLL's VSTGUI static initializers call CoCreateInstance during
+	// DllMain, so the COM apartment must exist BEFORE the DLL is loaded.
+	if (tc.ui)
+		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+#endif
 	std::string moduleErr;
 	auto module = VST3::Hosting::Module::create(tc.plugin, moduleErr);
 	if (!module)
@@ -856,6 +1336,24 @@ RunResult runOffline(const TestCase& tc)
 	processor->setProcessing(true);
 	rr.latencySamples = processor->getLatencySamples();
 
+	//--- open hidden editor for screenshot capture --------------------------
+	UiCapture ui;
+	ui.fired.assign(tc.screenshots.size(), false);
+	if (tc.ui && !tc.screenshots.empty())
+	{
+		TUID controllerUid {};
+		if (component->getControllerClassId(controllerUid) != kResultOk ||
+		    !ui.init(module, controllerUid, component.get()))
+		{
+			ui.shutdown();
+			rr.error = "failed to open hidden editor";
+			return rr;
+		}
+	}
+	std::vector<int64> atSamples;
+	for (const auto& s : tc.screenshots)
+		atSamples.push_back(UiCapture::parseAt(s.at, input.sampleRate));
+
 	//--- pump audio ---------------------------------------------------------
 	const int frames = static_cast<int>(input.frames());
 	const int channels = input.channels;
@@ -867,6 +1365,10 @@ RunResult runOffline(const TestCase& tc)
 	for (int blockStart = 0; blockStart < frames; blockStart += tc.blockSize)
 	{
 		const int numSamples = std::min(tc.blockSize, frames - blockStart);
+
+		// fire any screenshots whose time has come
+		for (std::size_t i : ui.dueShots(tc.screenshots, atSamples.data(), blockStart))
+			rr.shots.push_back({tc.screenshots[i].file, ui.fire(i, tc.screenshots[i].file)});
 
 		AudioBusBuffers inBus;
 		inBus.numChannels = channels;
@@ -890,6 +1392,9 @@ RunResult runOffline(const TestCase& tc)
 			int64 rel = ev.sampleOffset - blockStart;
 			if (rel >= 0 && rel < numSamples)
 			{
+				// keep the editor in sync with the automated value
+				if (ui.open)
+					ui.controller->setParamNormalized(ev.paramId, ev.valueNormalized);
 				int32 idx = 0;
 				IParamValueQueue* queue = paramChanges.addParameterData(ev.paramId, idx);
 				if (queue)
@@ -924,6 +1429,54 @@ RunResult runOffline(const TestCase& tc)
 	}
 
 	//--- teardown -----------------------------------------------------------
+	// "end" screenshots fire after the last block was processed
+	for (std::size_t i = 0; i < tc.screenshots.size(); ++i)
+	{
+		if (!ui.firedAt(i) && atSamples[i] >= INT64_MAX / 2)
+			rr.shots.push_back({tc.screenshots[i].file, ui.fire(i, tc.screenshots[i].file)});
+	}
+
+	// validate captured PNGs
+	for (auto& s : rr.shots)
+	{
+		std::string vErr;
+		s.valid = ui.open && validateScreenshot(s.file, 720, 560, vErr);
+		if (!s.valid)
+			s.file += " [" + vErr + "]";
+	}
+
+	// evaluate mustDiffer pairs: both files must exist and NOT be identical
+	for (const auto& fa : tc.mustDiffer)
+		for (const auto& fb : tc.mustDiffer)
+		{
+			if (fa >= fb)
+				continue;
+			RunResult::Diff d {fa, fb};
+			std::string dErr;
+			d.differ = pngFilesDiffer(fa, fb, dErr);
+			if (!d.differ)
+				d.a += " [" + dErr + "]";
+			rr.diffs.push_back(std::move(d));
+		}
+
+	// evaluate golden-image compares (F4): captured shot vs committed baseline
+	if (!tc.goldenUi.file.empty() && !tc.goldenUi.ref.empty())
+	{
+		RunResult::Golden g {tc.goldenUi.file, tc.goldenUi.ref, tc.goldenUi.maxFraction,
+		                     tc.goldenUi.tolerance};
+		std::string gErr;
+		bool within = false;
+		const bool cmpOk = vdplg::compareGoldenUi(g.file, g.ref, g.maxFraction, g.tolerance, within,
+		                              g.diffFraction, gErr);
+		g.ok = cmpOk && within;
+		if (!g.ok && gErr.empty())
+			gErr = "pixel diff exceeds limit";
+		if (!g.ok)
+			g.file += " [" + gErr + "]";
+		rr.goldens.push_back(std::move(g));
+	}
+
+	ui.shutdown();
 	processor->setProcessing(false);
 	component->setActive(false);
 
@@ -962,6 +1515,12 @@ void printJsonReport(const std::string& caseName, const RunResult& run,
 	bool allOk = run.ok && goldenChecked;
 	for (const auto& r : results)
 		allOk = allOk && r.ok;
+	for (const auto& s : run.shots)
+		allOk = allOk && s.valid;
+	for (const auto& d : run.diffs)
+		allOk = allOk && d.differ;
+	for (const auto& g : run.goldens)
+		allOk = allOk && g.ok;
 
 	auto levels = out ? vdplg::analyzeLevels(out->samples) : vdplg::AnalysisResult{};
 
@@ -983,6 +1542,40 @@ void printJsonReport(const std::string& caseName, const RunResult& run,
 		            jsonEscape(r.detail).c_str(), i + 1 < results.size() ? "," : "");
 	}
 	std::printf("  ],\n");
+	if (!run.shots.empty())
+	{
+		std::printf("  \"screenshots\": [\n");
+		for (std::size_t i = 0; i < run.shots.size(); ++i)
+			std::printf("    {\"file\": \"%s\", \"ok\": %s}%s\n",
+			            jsonEscape(run.shots[i].file).c_str(),
+			            run.shots[i].valid ? "true" : "false",
+			            i + 1 < run.shots.size() ? "," : "");
+		std::printf("  ],\n");
+	}
+	if (!run.diffs.empty())
+	{
+		std::printf("  \"mustDiffer\": [\n");
+		for (std::size_t i = 0; i < run.diffs.size(); ++i)
+			std::printf("    {\"a\": \"%s\", \"b\": \"%s\", \"ok\": %s}%s\n",
+			            jsonEscape(run.diffs[i].a).c_str(),
+			            jsonEscape(run.diffs[i].b).c_str(),
+			            run.diffs[i].differ ? "true" : "false",
+			            i + 1 < run.diffs.size() ? "," : "");
+		std::printf("  ],\n");
+	}
+		if (!run.goldens.empty())
+		{
+			std::printf("  \"goldenUi\": [\n");
+			for (std::size_t i = 0; i < run.goldens.size(); ++i)
+				std::printf("    {\"file\": \"%s\", \"ref\": \"%s\", \"ok\": %s, "
+				            "\"diffFraction\": %.9g, \"maxFraction\": %.9g}%s\n",
+				            jsonEscape(run.goldens[i].file).c_str(),
+				            jsonEscape(run.goldens[i].ref).c_str(),
+				            run.goldens[i].ok ? "true" : "false",
+				            run.goldens[i].diffFraction, run.goldens[i].maxFraction,
+				            i + 1 < run.goldens.size() ? "," : "");
+			std::printf("  ],\n");
+		}
 	std::printf("  \"golden\": {\"checked\": %s, \"tolerance\": %.9g, \"error\": \"%s\"}\n",
 	             goldenChecked ? "true" : "false", tolerance, jsonEscape(goldenError).c_str());
 	std::printf("}\n");
@@ -1002,6 +1595,9 @@ int main(int argc, char** argv)
 	int blockSize = 512;
 	double tolerance = 1e-6;
 	bool reportJson = false;
+	bool uiCli = false;
+	std::vector<std::string> shotCli;
+	std::string goldenRefCli; // --compare-golden-ui <ref.png> (F4)
 
 	for (int i = 1; i < argc; ++i)
 	{
@@ -1012,6 +1608,12 @@ int main(int argc, char** argv)
 			tc.plugin = next();
 			tc.pluginCli = tc.plugin;
 		}
+		else if (a == "--ui")
+			uiCli = true;
+		else if (a == "--compare-golden-ui")
+			goldenRefCli = next();
+		else if (a == "--screenshot")
+			shotCli.push_back(next());
 		else if (a == "--input")
 			tc.input = next();
 		else if (a == "--blocksize")
@@ -1081,6 +1683,16 @@ int main(int argc, char** argv)
 			tc.compareGolden = joinPath(caseDir, tc.compareGolden);
 		if (!tc.output.empty() && isRelative(tc.output))
 			tc.output = joinPath(caseDir, tc.output);
+		for (auto& s : tc.screenshots)
+			if (!s.file.empty() && isRelative(s.file))
+				s.file = joinPath(caseDir, s.file);
+		for (auto& f : tc.mustDiffer)
+			if (!f.empty() && isRelative(f))
+				f = joinPath(caseDir, f);
+		if (!tc.goldenUi.file.empty() && isRelative(tc.goldenUi.file))
+			tc.goldenUi.file = joinPath(caseDir, tc.goldenUi.file);
+		if (!tc.goldenUi.ref.empty() && isRelative(tc.goldenUi.ref))
+			tc.goldenUi.ref = joinPath(caseDir, tc.goldenUi.ref);
 	}
 	else
 	{
@@ -1088,6 +1700,18 @@ int main(int argc, char** argv)
 		tc.blockSize = blockSize;
 		tc.assertions = cliAssertions;
 		tc.tolerance = tolerance;
+	}
+	if (uiCli)
+		tc.ui = true;
+	for (const auto& p : shotCli)
+		tc.screenshots.push_back({"end", p});
+	if (!goldenRefCli.empty())
+	{
+		// CLI form: compare the last scheduled capture against the baseline.
+		if (tc.goldenUi.ref.empty())
+			tc.goldenUi.ref = goldenRefCli;
+		if (tc.goldenUi.file.empty() && !tc.screenshots.empty())
+			tc.goldenUi.file = tc.screenshots.back().file;
 	}
 
 	if (tc.plugin.empty() || tc.input.empty())
@@ -1117,14 +1741,13 @@ int main(int argc, char** argv)
 			evaluateAssertion(a, inWav, run.output, run.paramCount, ar);
 			results.push_back(std::move(ar));
 		}
-
 		if (!tc.compareGolden.empty())
 		{
 			vdplg::WavFile golden;
 			if (!vdplg::loadWav(tc.compareGolden, golden, err))
 			{
-				goldenChecked = false;
 				goldenError = "failed to load golden WAV: " + err;
+				goldenChecked = false;
 			}
 			else
 			{
@@ -1162,15 +1785,36 @@ int main(int argc, char** argv)
 			            r.detail.c_str());
 		if (!tc.compareGolden.empty() && !goldenChecked)
 			std::printf("FAIL: golden comparison: %s\n", goldenError.c_str());
+		for (const auto& s : run.shots)
+			std::printf("%s: screenshot %s\n", s.valid ? "PASS" : "FAIL", s.file.c_str());
+		for (const auto& d : run.diffs)
+			std::printf("%s: differ %s vs %s\n", d.differ ? "PASS" : "FAIL",
+			            d.a.c_str(), d.b.c_str());
+		for (const auto& g : run.goldens)
+			std::printf("%s: golden-ui %s vs %s (diff %.9g, max %.9g)\n",
+			            g.ok ? "PASS" : "FAIL", g.file.c_str(), g.ref.c_str(),
+			            g.diffFraction, g.maxFraction);
 
 		bool allOk = run.ok && goldenChecked;
 		for (const auto& r : results)
 			allOk = allOk && r.ok;
+		for (const auto& s : run.shots)
+			allOk = allOk && s.valid;
+		for (const auto& d : run.diffs)
+			allOk = allOk && d.differ;
+		for (const auto& g : run.goldens)
+			allOk = allOk && g.ok;
 		std::printf(allOk ? "RESULT: PASS\n" : "RESULT: FAIL\n");
 	}
 
 	bool allOk = run.ok && goldenChecked;
 	for (const auto& r : results)
 		allOk = allOk && r.ok;
+	for (const auto& s : run.shots)
+		allOk = allOk && s.valid;
+	for (const auto& d : run.diffs)
+		allOk = allOk && d.differ;
+	for (const auto& g : run.goldens)
+		allOk = allOk && g.ok;
 	return allOk ? 0 : 1;
 }

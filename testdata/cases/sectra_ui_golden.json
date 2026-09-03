@@ -1,0 +1,21 @@
+{
+  "plugin": "../../build/VST3/Release/sectrascope.vst3",
+  "input": "../wavs/sine_440.wav",
+  "blockSize": 512,
+  "automation": "",
+  "assertions": [
+    "peak(out) >= 0.49",
+    "peak(out) <= 0.51"
+  ],
+  "ui": true,
+  "screenshots": [
+    { "at": "end", "file": "out/ui_golden.png" }
+  ],
+  "goldenUi": {
+    "file": "out/ui_golden.png",
+    "ref": "../golden/sectra_scope_steady.png",
+    "maxFraction": 0.01,
+    "tolerance": 8
+  },
+  "reportJson": false
+}

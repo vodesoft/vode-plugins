@@ -14,7 +14,15 @@
 void* moduleHandle = nullptr;
 #endif
 
+// Defined in l1_sectra_scope.cpp; no-op when no [ui] test ran this process.
+extern "C" void vdplg_tests_shutdown_ui ();
+
 int main(int argc, char* argv[]) {
     Catch::Session session;
-    return session.run(argc, argv);
+    const int rc = session.run(argc, argv);
+    // Deterministic VSTGUI/COM shutdown while main() is still alive — see
+    // l1_sectra_scope.cpp for why cross-TU static destruction order is not
+    // relied upon. No-op when no [ui] test ran in this process.
+    vdplg_tests_shutdown_ui ();
+    return rc;
 }

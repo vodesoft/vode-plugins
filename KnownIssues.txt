@@ -1,0 +1,3 @@
+- If I turn off the prugin in insert deck and then turn if on back it does not 
+start paining specra. Switching of FFT size helps. I expect plugin should start 
+painitng automatically after off/on

@@ -7,12 +7,19 @@
 #include "Controller.h"
 #include "sectraparamids.h"
 
+#include "vstgui/lib/cbitmap.h"
+#include "vstgui/lib/cframe.h"
+#include "vstgui/uidescription/cstream.h"
+#include "vstgui/lib/coffscreencontext.h"
+#include "vstgui/lib/platform/platformfactory.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <string_view>
 
 namespace vdplg {
@@ -72,6 +79,40 @@ void asciiToUtf16(String128 dst, const char* src)
 	for (uint32 i = 0; i < 127 && src[i] != '\0'; ++i)
 		dst[i] = static_cast<TChar>(src[i]);
 	dst[std::min<uint32>(static_cast<uint32>(std::strlen(src)), 127)] = 0;
+}
+
+// Message id used by tests / test host to request a UI screenshot.
+const FIDString kScreenshotMessageId = "vdplg.debug.screenshot";
+
+// Renders a VSTGUI frame off-screen and writes it as PNG to `path`.
+// Mirrors VST3Editor::saveScreenshot() (vstgui4/plugin-bindings/vst3editor.cpp).
+bool renderFrameToPng(CFrame* frame, const std::string& path)
+{
+	if (!frame || path.empty())
+		return false;
+
+	const auto size = frame->getViewSize().getSize();
+	auto offscreen = COffscreenContext::create(size, 1.);
+	if (!offscreen)
+		return false;
+
+	offscreen->beginDraw();
+	frame->draw(offscreen);
+	offscreen->endDraw();
+
+	auto data = getPlatformFactory().createBitmapMemoryPNGRepresentation(
+	    offscreen->getBitmap()->getPlatformBitmap());
+	if (data.empty())
+		return false;
+
+	CFileStream stream;
+	if (!stream.open(path.c_str(), CFileStream::kWriteMode | CFileStream::kTruncateMode |
+	                          CFileStream::kBinaryMode))
+	{
+		return false;
+	}
+	stream.writeRaw(data.data(), static_cast<uint32_t>(data.size()));
+	return true;
 }
 
 } // namespace
@@ -237,6 +278,9 @@ CView* Controller::createCustomView (UTF8StringPtr name, const UIAttributes& att
 void Controller::didOpen (VST3Editor* editor)
 {
 	updateScopeLabels ();
+	// The live editor's frame is also exposed as the debug frame so that a
+	// "vdplg.debug.screenshot" message works against the real UI too.
+	debugFrame_ = editor ? editor->getFrame () : nullptr;
 }
 
 //------------------------------------------------------------------------
@@ -248,14 +292,40 @@ void Controller::willClose (VST3Editor* /*editor*/)
 	// createCustomView(). Without this, onDataExchangeBlocksReceived would keep
 	// writing spectra into freed memory while playback runs (heap corruption).
 	scopes_.clear ();
+	debugFrame_ = nullptr;
 }
 
 //------------------------------------------------------------------------
 tresult PLUGIN_API Controller::notify (IMessage* message)
 {
+	// NOTE: FIDString is const char*, so compare by content, not by address.
+	if (message && std::strcmp(message->getMessageID (), kScreenshotMessageId) == 0)
+	{
+		IAttributeList* attrs = message->getAttributes ();
+		String128 pathW {};
+		if (!debugFrame_ || !attrs ||
+		    attrs->getString ("path", pathW, sizeof(pathW)) != kResultTrue)
+			return kResultFalse;
+		std::string path;
+		for (uint32 i = 0; i < 127 && pathW[i]; ++i)
+			path += static_cast<char>(pathW[i]);
+		return renderFrameToPng (debugFrame_, path) ? kResultTrue : kResultFalse;
+	}
 	if (dataExchange_.onMessage (message))
 		return kResultTrue;
 	return EditController::notify (message);
+}
+
+//------------------------------------------------------------------------
+void Controller::attachDebugFrame (CFrame* frame)
+{
+	debugFrame_ = frame; // ownership stays with the caller
+}
+
+//------------------------------------------------------------------------
+void Controller::detachDebugFrame ()
+{
+	debugFrame_ = nullptr;
 }
 
 //------------------------------------------------------------------------
