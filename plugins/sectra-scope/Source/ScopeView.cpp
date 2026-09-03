@@ -4,6 +4,7 @@
 
 #include "vstgui/lib/cdrawcontext.h"
 #include "vstgui/lib/cgraphicspath.h"
+#include "vstgui/lib/ccolor.h"
 
 #include <cstdio>
 #include <cmath>
@@ -91,6 +92,13 @@ void ScopeView::draw (CDrawContext* pContext)
 	if (w <= 4 || h <= 4)
 		return;
 
+	// Explicit axis font: the default UI font renders too small/faint for the
+	// dB scale labels in the left gutter. Heap-allocated because the draw
+	// context keeps a StrongPointer to it beyond this call (a stack object
+	// here caused an access violation on the next draw).
+	auto* axisFont = new CFontDesc ("SystemFont", 12.f, kNormalFace);
+	pContext->setFont (axisFont);
+
 	//--- layout -----------------------------------------------------------
 	const int leftMargin = 36; // room for dB labels
 	const int plotLeft = leftMargin;
@@ -114,7 +122,7 @@ void ScopeView::draw (CDrawContext* pContext)
 		return plotLeft + static_cast<CCoord> (xNorm * plotWidth);
 	};
 
-	pContext->setFontColor ({110, 110, 110, 255});
+	pContext->setFontColor ({170, 170, 170, 255});
 	pContext->setFrameColor ({70, 70, 70, 255});
 	pContext->setLineWidth (1.f);
 
@@ -154,7 +162,7 @@ void ScopeView::draw (CDrawContext* pContext)
 	// octave ticks at 20/40/80/…/10 kHz
 	const double octaves[] = {20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1250.0,
 	                          2500.0, 5000.0, 10000.0};
-	pContext->setFontColor ({90, 90, 90, 255});
+	pContext->setFontColor ({150, 150, 150, 255});
 	for (double f : octaves)
 	{
 		double xNorm = freqMap_.freqToX (f) / kNumCols;
