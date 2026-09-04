@@ -335,7 +335,9 @@ TEST_CASE("L0: analyzer finds sine peaks at the correct log-frequency columns",
 	LogFreqMap map(20.0, 20000.0, kColumns);
 	const int fftSize = 4096;
 	const int blockLen = 512;
-	const int blocks = 8; // ~92 ms warm-up
+	// Hopped processing (~30 Hz) needs more total samples than the old
+	// per-block scheme for the meter to settle: 32 blocks ~= 330 ms.
+	const int blocks = 32;
 
 	for (double freq : {100.0, 440.0, 5000.0})
 	{
@@ -355,7 +357,7 @@ TEST_CASE("L0: analyzer normalized reference reads full-scale sine at 0 dB",
 	LogFreqMap map(20.0, 20000.0, kColumns);
 	const int fftSize = 4096;
 	const int blockLen = 512;
-	const int blocks = 8;
+	const int blocks = 32; // see "finds sine peaks" — hopped warm-up
 
 	auto signal = makeSine(440.0, blockLen * blocks, 1.0f);
 	auto spec = runAnalyzer(fftSize, WindowType::kHann, DbReference::kNormalized,
@@ -370,7 +372,7 @@ TEST_CASE("L0: analyzer raw reference reads full-scale rectangular sine near -3 
 	LogFreqMap map(20.0, 20000.0, kColumns);
 	const int fftSize = 4096;
 	const int blockLen = 512;
-	const int blocks = 8;
+	const int blocks = 32; // see "finds sine peaks" — hopped warm-up
 
 	auto signal = makeSine(440.0, blockLen * blocks, 1.0f);
 	auto spec = runAnalyzer(fftSize, WindowType::kRectangular, DbReference::kRaw,
@@ -505,7 +507,7 @@ TEST_CASE("L0: normalized reference reads 0 dB for every window type",
 	LogFreqMap map(20.0, 20000.0, kColumns);
 	const int fftSize = 4096;
 	const int blockLen = 512;
-	const int blocks = 8;
+	const int blocks = 32; // hopped warm-up: fill trailing-N history with tone
 	auto signal = makeSine(440.0, blockLen * blocks, 1.0f);
 	int expectedCol = static_cast<int>(map.freqToX(440.0));
 
@@ -536,5 +538,133 @@ TEST_CASE("L0: raw reference is lower than normalized for tapered windows",
 		float rawPeak = peakDbNear(rawSpec, expectedCol, 2);
 		float normPeak = peakDbNear(normSpec, expectedCol, 2);
 		REQUIRE(rawPeak < normPeak - 1.0f); // coherent gain loss visible in Raw mode
+	}
+}
+
+//------------------------------------------------------------------------
+// Sliding (hopped) analyzer — PLAN-sliding-spectrum.md
+//------------------------------------------------------------------------
+namespace {
+// Target refresh rate used by the sliding analyzer (must match production constant).
+constexpr double kTargetUpdateHz = 30.0;
+int hopFor(double sampleRateHz, int fftSize)
+{
+	int h = static_cast<int>(std::lround(sampleRateHz / kTargetUpdateHz));
+	if (h < 1) h = 1;
+	if (h > fftSize) h = fftSize;
+	return h;
+}
+} // namespace
+
+TEST_CASE("L0 [sliding]: sub-hop feeds do not update; full hop does", "[l0][sectra][analyzer][sliding]")
+{
+	const int fftSize = 4096;
+	const int hop = hopFor(kSampleRate, fftSize);
+
+	SpectrumAnalyzer an;
+	an.configure(fftSize, WindowType::kHann, DbReference::kNormalized, kSampleRate);
+
+	// Silence warm-up so held_ starts at the floor deterministically.
+	std::vector<float> zeros(static_cast<std::size_t>(hop * 4), 0.0f);
+	for (int i = 0; i + hop <= static_cast<int>(zeros.size()); i += hop)
+		an.process(zeros.data() + static_cast<std::size_t>(i), hop);
+	const auto& before = an.spectrum();
+	float beforePeak = -std::numeric_limits<float>::infinity();
+	for (float v : before) beforePeak = std::max(beforePeak, v);
+
+	// Feed a loud tone but LESS than one hop: no FFT may run yet, spectrum unchanged.
+	auto tone = makeSine(440.0, hop - 1, 1.0f);
+	an.process(tone.data(), static_cast<int>(tone.size()));
+	const auto& afterSubHop = an.spectrum();
+	REQUIRE(afterSubHop == before); // identical buffers => no frame was processed
+
+	// Now feed enough to complete a hop: the display must move toward the tone.
+	std::vector<float> more(hop, 0.0f);
+	for (int i = 0; i < hop; ++i)
+		more[static_cast<std::size_t>(i)] =
+		    static_cast<float>(std::sin(2.0 * M_PI * 440.0 * (tone.size() + i) / kSampleRate));
+	an.process(more.data(), hop);
+	float afterPeak = -std::numeric_limits<float>::infinity();
+	for (float v : an.spectrum()) afterPeak = std::max(afterPeak, v);
+	REQUIRE(afterPeak > beforePeak); // a frame ran and pulled the meter up
+}
+
+TEST_CASE("L0 [sliding]: ballistics decay matches analytic model stepped per hop",
+          "[l0][sectra][analyzer][sliding]")
+{
+	const double sr = kSampleRate; // must match makeSine()'s generation rate
+	const int fftSize = 4096;
+	const int hop = hopFor(sr, fftSize);
+	const double dt = static_cast<double>(hop) / sr;
+
+	SpectrumAnalyzer an;
+	an.configure(fftSize, WindowType::kHann, DbReference::kNormalized, sr);
+	an.setBallistics(0.0, 0.5); // instant attack, 0.5 s release (24 dB / 0.5 s)
+
+	// Drive a full-scale sine until the peak column settles near 0 dB.
+	LogFreqMap map(20.0, 20000.0, kColumns);
+	int col = static_cast<int>(map.freqToX(440.0));
+	auto tone = makeSine(440.0, hop * 30, 1.0f);
+	tone.resize(static_cast<std::size_t>(hop * 30), 0.0f);
+	for (int i = 0; i + hop <= static_cast<int>(tone.size()); i += hop)
+		an.process(tone.data() + static_cast<std::size_t>(i), hop);
+	float heldAtTone = an.spectrum()[static_cast<std::size_t>(col)];
+
+	// Now silence for exactly K hops and compare against the analytic linear-dB
+	// travel: from heldAtTone toward floor at 24 dB per 0.5 s.
+	const int K = 10;
+	std::vector<float> sil(hop, 0.0f);
+	for (int i = 0; i < K; ++i)
+		an.process(sil.data(), hop);
+
+	MeterBallistics ref;
+	ref.setTimes(0.0, 0.5);
+	float expected = heldAtTone;
+	for (int i = 0; i < K; ++i)
+		expected = ref.step(expected, -300.0f, dt);
+
+	float actual = an.spectrum()[static_cast<std::size_t>(col)];
+	REQUIRE(actual == Approx(expected).margin(0.75f));
+}
+
+TEST_CASE("L0 [sliding]: zero-padding is capped so large FFTs stay affordable",
+          "[l0][sectra][analyzer][sliding]")
+{
+	// The old x16 rule made a 16K window run as a 256K-point FFT every block.
+	// With the cap in place the padded length must be bounded well below that.
+	SpectrumAnalyzer big;
+	big.configure(16384, WindowType::kHann, DbReference::kNormalized, kSampleRate);
+	REQUIRE(big.paddedSize() <= 65536);
+
+	SpectrumAnalyzer mid;
+	mid.configure(4096, WindowType::kHann, DbReference::kNormalized, kSampleRate);
+	REQUIRE(mid.paddedSize() >= 4096); // never smaller than the analysis window
+	REQUIRE(mid.paddedSize() <= 65536);
+}
+
+TEST_CASE("L0 [sliding]: peak stays within +/-1 column across all offered FFT sizes",
+          "[l0][sectra][analyzer][sliding]")
+{
+	LogFreqMap map(20.0, 20000.0, kColumns);
+	const double sr = kSampleRate; // must match makeSine()'s generation rate
+	const int hop = hopFor(sr, 16384);
+
+	for (int fftSize : {1024, 2048, 4096, 8192, 16384})
+	{
+		for (double freq : {100.0, 440.0, 5000.0})
+		{
+			SpectrumAnalyzer an;
+			an.configure(fftSize, WindowType::kHann, DbReference::kNormalized, sr);
+			auto tone = makeSine(freq, hop * 40, 0.5f);
+			tone.resize(static_cast<std::size_t>(hop * 40), 0.0f);
+			for (int i = 0; i + hop <= static_cast<int>(tone.size()); i += hop)
+				an.process(tone.data() + static_cast<std::size_t>(i), hop);
+			int expectedCol = static_cast<int>(map.freqToX(freq));
+			int found = argMaxColumn(an.spectrum());
+			// Small windows have coarser low-end resolution on a log axis; allow
+			// +/-2 columns there while still catching gross misalignment.
+			CHECK(found >= expectedCol - 2);
+			CHECK(found <= expectedCol + 2);
+		}
 	}
 }

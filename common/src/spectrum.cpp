@@ -28,6 +28,21 @@ constexpr double kFMaxHz = 20000.0;
 // signal and finite so downstream math never sees Inf/NaN.
 constexpr float kDbFloor = -300.0f;
 
+// Target refresh rate for the sliding spectrum (PLAN-sliding-spectrum.md): one
+// FFT per hop, hop = round(sampleRate / kTargetUpdateHz) ~ 30 Hz wall-clock.
+constexpr double kTargetUpdateHz = 30.0;
+
+// Zero-padding policy: pad the analysis window by up to PAD_FACTOR (power-of-two
+// steps) for fine bin resolution, but never beyond kMaxPaddedSize. The old x16
+// rule made a 16K window run as a 256K-point FFT every block — too heavy to
+// sustain a 30 Hz slide. Capping trades a few low-end log columns of detail for
+// an affordable consumer (accuracy pinned by L0 [sliding] tests).
+// Keep the proven x16 factor for small/medium windows (it preserves the exact
+// peak levels the reference-level tests assert); the cap only bites on the
+// largest windows where the extra bins are unaffordable at 30 Hz.
+constexpr int kPadFactor = 16;
+constexpr int kMaxPaddedSize = 65536;
+
 // Raw reference is uniformly ~3.01 dB below normalized (full-scale sine:
 // normalized reads 0 dB, raw reads ~-3.01 dB). Applied as a constant offset in
 // the dB domain so the ref switch can change live without re-prime.
@@ -254,12 +269,16 @@ void SpectrumAnalyzer::configure(int fftSize, WindowType window, DbReference ref
 	ref_ = ref;
 	sampleRate_ = sampleRateHz;
 
+	// Hop size: time-based (~kTargetUpdateHz updates/sec) and clamped so we
+	// never advance the trailing-N history past its own end (streaming rule).
+	hop_ = static_cast<int>(std::lround(sampleRate_ / kTargetUpdateHz));
+	if (hop_ < 1) hop_ = 1;
+	if (hop_ > fftSize_) hop_ = fftSize_;
+
 	// Zero-pad to a power-of-two multiple of N for fast FFTs and fine bin
-	// resolution. Fine bins keep the peak aligned to the correct log-frequency
-	// display column even where the axis is dense (low end), and avoid
-	// scalloping under coherent-gain normalization.
+	// resolution, capped at kMaxPaddedSize (see constants above).
 	paddedSize_ = fftSize_;
-	while (paddedSize_ < fftSize_ * 16)
+	while ((paddedSize_ < fftSize_ * kPadFactor) && (paddedSize_ < kMaxPaddedSize))
 		paddedSize_ <<= 1;
 
 	mrfft_.setSize(paddedSize_);
@@ -286,6 +305,7 @@ void SpectrumAnalyzer::configure(int fftSize, WindowType window, DbReference ref
 	targetLinear_.assign(kDisplayColumns, 0.0f);
 	held_.assign(kDisplayColumns, kDbFloor);
 	display_.assign(kDisplayColumns, kDbFloor);
+	pending_.clear();
 	configured_ = true;
 }
 
@@ -294,20 +314,28 @@ void SpectrumAnalyzer::process(const float* samples, int numSamples)
 	if (!samples || numSamples <= 0 || !configured_)
 		return;
 
-	// Hosts may deliver blocks larger than the FFT size: chunk them so the
-	// trailing-N history never advances past its own end.
-	int offset = 0;
-	while (offset < numSamples)
+	// Accumulate input and run exactly one analysis frame per hop of samples —
+	// a time-based slide (~30 Hz) independent of host block size. Sub-hop feeds
+	// leave the display untouched until enough has arrived.
+	pending_.insert(pending_.end(), samples, samples + numSamples);
+
+	// Bound memory if the host stalls then bursts: keep only what is needed for
+	// a few frames' worth of pending data (mirrors the drop-oldest queue policy).
+	const std::size_t cap = static_cast<std::size_t>(4) * static_cast<std::size_t>(hop_);
+	if (pending_.size() > cap)
+		pending_.erase(pending_.begin(),
+		               pending_.begin() + static_cast<std::ptrdiff_t>(pending_.size() - cap));
+
+	while (static_cast<int>(pending_.size()) >= hop_)
 	{
-		const int n = std::min(fftSize_, numSamples - offset);
-		processFrame(samples + offset, n);
-		offset += n;
+		processFrame(pending_.data(), hop_);
+		pending_.erase(pending_.begin(), pending_.begin() + hop_);
 	}
 }
 
 void SpectrumAnalyzer::processFrame(const float* samples, int numSamples)
 {
-	// Advance the trailing-N history by numSamples (<= fftSize_).
+	// Advance the trailing-N history by numSamples (== hop_ <= fftSize_).
 	std::vector<float> shifted(history_.begin() + numSamples, history_.end());
 	shifted.insert(shifted.end(), samples, samples + numSamples);
 	history_.swap(shifted);
@@ -351,6 +379,7 @@ void SpectrumAnalyzer::processFrame(const float* samples, int numSamples)
 
 const std::vector<float>& SpectrumAnalyzer::spectrum() const { return display_; }
 int SpectrumAnalyzer::numColumns() const { return configured_ ? kDisplayColumns : 0; }
+int SpectrumAnalyzer::paddedSize() const { return configured_ ? paddedSize_ : 0; }
 
 void SpectrumAnalyzer::setBallistics(double attackSec, double releaseSec)
 {

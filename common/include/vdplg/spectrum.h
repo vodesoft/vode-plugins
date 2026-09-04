@@ -155,18 +155,25 @@ public:
 
 	const std::vector<float>& spectrum() const; // dB values per display column
 	int numColumns() const;
+	// Zero-padded FFT length in use (>= fftSize). Exposed for tests that assert
+	// the padding cap keeps large windows affordable.
+	int paddedSize() const;
 
 	// Live-updatable meter ballistics (seconds).
 	void setBallistics(double attackSec, double releaseSec);
 
 private:
 	float rawOffset() const;
-	// Processes exactly one fftSize_-sample frame (history must hold >= N).
+	// Processes exactly one hop_-sample frame (history must hold >= N).
 	void processFrame(const float* samples, int numSamples);
 
 	bool configured_{false};
 	int fftSize_{0};
 	int paddedSize_{0};
+	// Samples accumulated since the last FFT frame. A frame runs only once this
+	// reaches hop_, giving a time-based (~30 Hz) slide independent of block size.
+	int hop_{1};
+	std::vector<float> pending_;
 	WindowType window_{WindowType::kHann};
 	DbReference ref_{DbReference::kNormalized};
 	double sampleRate_{44100.0};

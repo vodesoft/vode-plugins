@@ -351,3 +351,60 @@ TEST_CASE("AnalysisWorker: live mode switch changes channel mixing", "[l0][analy
 	REQUIRE(sawEnergy);
 }
 
+TEST_CASE("AnalysisWorker: large FFT sustains a smooth update rate (sliding)", "[l0][analysisworker][sliding]")
+{
+	// Regression guard for "FFT applied once / trace doesn't slide": at the largest
+	// window the consumer must still deliver scope snapshots many times per second.
+	// Pre-fix, a 16K window ran a 256K-point padded FFT on EVERY host block, so the
+	// worker fell far behind and the visible trace was sparse/stalled. With hopped
+	// processing (+ capped padding) it sustains a smooth ~30 Hz refresh.
+	AnalysisWorker worker;
+	auto cfg = makeConfig(ChannelMode::kLR, 16384); // worst-case FFT size
+	cfg.attackSec = 0.0;
+	cfg.releaseSec = 0.05;
+
+	std::atomic<int> calls{0};
+	worker.setScopeSink([&](const float*, const float*, const float*, int) {
+		calls.fetch_add(1);
+	});
+	worker.start(cfg, /*queueCapacity=*/64);
+
+	const int blockLen = 128;
+	auto left = sine(blockLen, 440.0, 0.5f, kSampleRate);
+	auto right = left;
+
+	// Warm up until the first snapshot is delivered.
+	bool warmed = false;
+	for (int n = 0; n < 200 && !warmed; ++n)
+	{
+		worker.feed(left.data(), right.data(), blockLen);
+		warmed = waitFor([&] { return calls.load() > 0; }, 2000);
+	}
+	REQUIRE(warmed);
+
+	// Hammer feed() as fast as possible for a fixed wall-clock window. The queue
+	// stays full, so the callback count measures the worker's sustainable
+	// frames-per-second (one per hop), independent of real-time pacing.
+	calls.store(0);
+	const auto t0 = std::chrono::steady_clock::now();
+	const double windowSec = 1.0;
+	while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
+	       < windowSec)
+	{
+		worker.feed(left.data(), right.data(), blockLen);
+	}
+	const double elapsed =
+	    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+	// Let the tail drain before reading the final count.
+	waitFor([&] { return true; }, 300);
+	const int totalCalls = calls.load();
+	const double rateHz = static_cast<double>(totalCalls) / elapsed;
+
+	worker.stop();
+
+	INFO("sustained update rate at 16K: " << rateHz << " Hz");
+	// Must be far above a stalled trace and comfortably below the ~30 Hz target.
+	REQUIRE(rateHz >= 10.0);
+}
+
